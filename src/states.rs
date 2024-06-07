@@ -367,7 +367,7 @@ impl Agent<MyState> for MyAgent {
                         }
                         ServerError(e) => {
                             print("エラーもらった")?;
-                            print(format!("{e:?}").as_str())?;
+                            print(format!("{e:?}"))?;
                             break;
                         }
                         Played(played) => {
@@ -388,6 +388,11 @@ impl Agent<MyState> for MyAgent {
                         }
                         GameEnd(game_end) => {
                             print(format!("ゲーム終わり! 勝者:{}", game_end.winner()).as_str())?;
+                            print(if game_end.winner() == self.state.my_id.denote() {
+                                "勝ちました!"
+                            } else {
+                                "負けました!"
+                            })?;
                             self.state.game_end = true;
                             break;
                         }
