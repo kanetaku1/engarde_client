@@ -22,6 +22,8 @@ pub trait State: Eq + Hash + Clone {
         let a_t = rand::random::<usize>() % actions.len();
         actions[a_t].clone()
     }
+
+    fn final_score_reward(&self) -> f64;
 }
 
 /// An `Agent` is something which hold a certain state, and is able to take actions from that

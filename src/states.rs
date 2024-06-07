@@ -129,26 +129,40 @@ impl State for MyState {
     type A = Action;
     #[allow(clippy::float_arithmetic)]
     fn reward(&self) -> f64 {
-        let actions = self.actions();
-        let a = actions
-            .iter()
-            .map(|&action| {
-                safe_possibility(
-                    self.calc_dist(),
-                    self.rest_cards(),
-                    self.hands(),
-                    &ProbabilityTable::new(self.calc_num_of_deck(), &self.rest_cards()),
-                    action,
-                )
-            })
-            .sum::<Option<Ratio<u64>>>()
-            .unwrap_or(Ratio::<u64>::zero())
-            .to_f64()
-            .expect("なんで")
-            .mul(200.0)
-            .powi(2);
-        let b = (f64::from(self.my_score())).powi(2) - (f64::from(self.enemy_score())).powi(2);
-        a + b
+        // let actions = self.actions();
+        // let a = actions
+        //     .iter()
+        //     .map(|&action| {
+        //         safe_possibility(
+        //             self.calc_dist(),
+        //             self.rest_cards(),
+        //             self.hands(),
+        //             &ProbabilityTable::new(self.calc_num_of_deck(), &self.rest_cards()),
+        //             action,
+        //         )
+        //     })
+        //     .sum::<Option<Ratio<u64>>>()
+        //     .unwrap_or(Ratio::<u64>::zero())
+        //     .to_f64()
+        //     .expect("なんで")
+        //     .mul(200.0)
+        //     .powi(2);
+        // let b = (f64::from(self.my_score())).powi(2) - (f64::from(self.enemy_score())).powi(2);
+        // a + b
+        0.0
+    }
+    fn final_score_reward(&self) -> f64 {
+        if self.game_end() {
+            if self.my_score() > self.enemy_score() {
+                100.0 // 勝利
+            } else if self.my_score() < self.enemy_score() {
+                -100.0 // 敗北
+            } else {
+                0.0 // 引き分け
+            }
+        } else {
+            0.0
+        }
     }
     fn actions(&self) -> Vec<Action> {
         fn attack_cards(hands: &[CardID], card: CardID) -> Option<Action> {
