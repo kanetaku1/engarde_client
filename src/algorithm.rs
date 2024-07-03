@@ -5,9 +5,7 @@ use std::iter;
 use num_rational::Ratio;
 use num_traits::identities::{One, Zero};
 
-use crate::{
-    Action, Attack, CardID, Direction, Maisuu, RestCards, HANDS_DEFAULT_U64, HANDS_DEFAULT_U8,
-};
+use crate::{Action, Attack, CardID, Direction, Maisuu, RestCards, HANDS_DEFAULT_U64};
 
 /// 相手の手札にカード番号`i`が`j`枚ある確率
 #[derive(Debug)]
@@ -21,8 +19,8 @@ pub struct ProbabilityTable {
 
 impl ProbabilityTable {
     /// 山札の数と`RestCards`から生成します
-    pub fn new(num_of_deck: u8, cards: &RestCards) -> Self {
-        let total_unvisible_cards = num_of_deck + HANDS_DEFAULT_U8;
+    pub fn new(cards: &RestCards) -> Self {
+        let total_unvisible_cards = cards.iter().map(Maisuu::denote).sum::<u8>();
         ProbabilityTable {
             card1: probability(cards[0], total_unvisible_cards),
             card2: probability(cards[1], total_unvisible_cards),
@@ -273,7 +271,7 @@ pub fn win_poss_attack(
         [Maisuu::ZERO, Maisuu::ONE, Maisuu::TWO, Maisuu::SOKUSHI]
             .iter()
             .map(|&enemy_quant| {
-                if hands[usize::from(card_num.denote())] > enemy_quant {
+                if hands[usize::from(card_num.denote() - 1)] > enemy_quant {
                     table.access(card_num, enemy_quant)
                 } else {
                     Ratio::<u64>::zero()
@@ -284,7 +282,7 @@ pub fn win_poss_attack(
     match action {
         Action::Attack(attack) => {
             let i: usize = attack.card().denote().into();
-            if rest_cards[i] < hands.count_cards(attack.card()) {
+            if rest_cards[i - 1] < hands.count_cards(attack.card()) {
                 return Some(Ratio::<u64>::one());
             }
             let win_possibility =
@@ -322,27 +320,20 @@ pub fn last_move(
     //     reachable_vec
     // }
     let distance = position.0 - position.1;
-    let mut return_value = None;
-    let last = check_last(parried_quant, restcards);
-    if last {
-        let can_attack =
-            hands[usize::try_from(distance).expect("usizeの境界内") - 1] != Maisuu::ZERO;
+    if check_last(parried_quant, restcards)
+        && hands[usize::try_from(distance).expect("usizeの境界内") - 1] != Maisuu::ZERO
+    {
         let attack_action = Action::Attack(Attack::new(
             CardID::from_u8(u8::try_from(distance).expect("u8の境界内")).expect("CardIDの境界内"),
             hands[usize::try_from(distance).expect("usizeの境界内")],
         ));
-        if can_attack {
-            let possibility = win_poss_attack(
-                restcards,
-                &hands_from_card_map(hands)?,
-                table,
-                attack_action,
-            )?;
-            if possibility == Ratio::one() {
-                return_value = Some(u64::try_from(distance).expect("u64の境界内"));
-            }
-        }
-        return_value
+        let possibility = win_poss_attack(
+            restcards,
+            &hands_from_card_map(hands)?,
+            table,
+            attack_action,
+        )?;
+        (possibility == Ratio::one()).then(|| u64::try_from(distance).expect("u64の教会内"))
     } else {
         None
     }

@@ -84,7 +84,7 @@ impl IndexMut<usize> for AcceptableNumbers {
 pub fn count_4and5(hands: [Maisuu; 5]) -> u8 {
     [Maisuu::THREE, Maisuu::FOUR, Maisuu::FIVE]
         .iter()
-        .map(|&i| hands[i.denote_usize()].denote())
+        .map(|&i| hands[i.denote_usize() - 1].denote())
         .sum()
 }
 /// 三枚以上持っているカードをtrueにして返す
@@ -110,18 +110,19 @@ pub fn initial_move(
     //4と5が使用可能か問い合わせる
 
     for i in (0..5).rev() {
-        if acceptable[usize::from(i)] {
+        if acceptable[usize::from(i)] && hands[usize::from(i)].denote() > 0 {
             return Ok(Action::Move(Movement::new(
-                CardID::from_u8(i).ok_or("意味わからんけど")?,
+                CardID::from_u8(i + 1).ok_or("意味わからんけど")?,
                 Direction::Forward,
             )));
         }
     }
+    unreachable!("{:?}\n距離:{:?}", hands, distance);
     //todo:平均にする
 
     let average = calc_ave(hands);
     //clippyに従うとエラーになった
-    if average < Ratio::from_integer(3) {
+    if average < Ratio::from_integer(3) && hands[CardID::Two.denote_usize() - 1].denote() > 0 {
         Ok(Action::Move(Movement::new(
             CardID::from_u8(2).ok_or("意味わからんけど")?,
             Direction::Forward,
@@ -191,18 +192,18 @@ pub fn should_go_2_7(
     //7の距離に行くべき状態か判断する
 
     if let Some(movement) = movement_togo7 {
-        if hands[movement.card().denote_usize()] != Maisuu::ZERO
+        if hands[movement.card().denote_usize() - 1] != Maisuu::ZERO
             && movement.direction() == Direction::Forward
-            && acceptable[movement.card().denote_usize()]
+            && acceptable[movement.card().denote_usize() - 1]
         {
             return togo7;
         }
     };
     //2の距離に行くべきかを判定する
     if let Some(movement) = movement_togo2 {
-        if hands[movement.card().denote_usize()] != Maisuu::ZERO
+        if hands[movement.card().denote_usize() - 1] != Maisuu::ZERO
             && movement.direction() == Direction::Forward
-            && acceptable[movement.card().denote_usize()]
+            && acceptable[movement.card().denote_usize() - 1]
         {
             return togo2;
         }

@@ -9,16 +9,16 @@ use std::{
     ops::Mul,
 };
 
+use apply::Also;
 use num_rational::Ratio;
 use num_traits::{ToPrimitive, Zero};
 use rurel::mdp::{Agent, State};
 
 use crate::{
-    algorithm::{safe_possibility, ProbabilityTable},
+    algorithm::{card_map_from_hands, safe_possibility, ProbabilityTable},
     print,
     protocol::{Evaluation, Messages, PlayAttack, PlayMovement, PlayerID},
-    read_stream, send_info, Action, Attack, CardID, Direction, Maisuu, Movement, RestCards,
-    HANDS_DEFAULT_U8,
+    read_stream, send_info, Action, Attack, CardID, Direction, Maisuu, Movement, UsedCards,
 };
 
 /// Stateは、結果状態だけからその評価と次できる行動のリストを与える。
@@ -26,7 +26,7 @@ use crate::{
 pub struct MyState {
     my_id: PlayerID,
     hands: Vec<CardID>,
-    cards: RestCards,
+    used: UsedCards,
     p0_score: u32,
     p1_score: u32,
     p0_position: u8,
@@ -45,9 +45,9 @@ impl MyState {
         self.my_id
     }
 
-    /// `RestCards`を返します。
-    pub fn rest_cards(&self) -> RestCards {
-        self.cards
+    /// `UsedCards`を返します。
+    pub fn used_cards(&self) -> UsedCards {
+        self.used
     }
 
     /// プレイヤー0のスコアを返します。
@@ -81,7 +81,7 @@ impl MyState {
     pub fn new(
         my_id: PlayerID,
         hands: Vec<CardID>,
-        cards: RestCards,
+        used: UsedCards,
         p0_score: u32,
         p1_score: u32,
         p0_position: u8,
@@ -91,7 +91,7 @@ impl MyState {
         Self {
             my_id,
             hands,
-            cards,
+            used,
             p0_score,
             p1_score,
             p0_position,
@@ -118,51 +118,54 @@ impl MyState {
         self.p1_position - self.p0_position
     }
 
-    fn calc_num_of_deck(&self) -> u8 {
-        self.rest_cards().iter().map(Maisuu::denote).sum::<u8>()
-            - u8::try_from(self.hands.len()).expect("いけるって")
-            - HANDS_DEFAULT_U8
+    fn calc_safe_reward(&self) -> f64 {
+        let actions = self.actions();
+        let card_map = card_map_from_hands(&self.hands).expect("安心して");
+        actions
+            .iter()
+            .map(|&action| {
+                safe_possibility(
+                    self.calc_dist(),
+                    self.used_cards().to_restcards(card_map),
+                    self.hands(),
+                    &ProbabilityTable::new(&self.used_cards().to_restcards(card_map)),
+                    action,
+                )
+            })
+            .sum::<Option<Ratio<u64>>>()
+            .unwrap_or(Ratio::<u64>::zero())
+            .to_f64()
+            .expect("なんで")
+            .mul(2000.0)
+    }
+
+    #[allow(clippy::float_arithmetic)]
+    fn calc_score_reward(&self) -> f64 {
+        (f64::from(self.my_score()) * 1000.0) - (f64::from(self.enemy_score()) * 1000.0)
+    }
+
+    fn distance_from_center(&self) -> i8 {
+        match self.my_id {
+            PlayerID::Zero => 12 - i8::try_from(self.p0_position).expect("i8の表現範囲外"),
+            PlayerID::One => i8::try_from(self.p1_position).expect("i8の表現範囲外") - 12,
+        }
+    }
+
+    #[allow(clippy::float_arithmetic)]
+    fn calc_position_reward(&self) -> f64 {
+        f64::from(self.distance_from_center()) * 200.0
     }
 }
 
 impl State for MyState {
     type A = Action;
+
     #[allow(clippy::float_arithmetic)]
     fn reward(&self) -> f64 {
-        // let actions = self.actions();
-        // let a = actions
-        //     .iter()
-        //     .map(|&action| {
-        //         safe_possibility(
-        //             self.calc_dist(),
-        //             self.rest_cards(),
-        //             self.hands(),
-        //             &ProbabilityTable::new(self.calc_num_of_deck(), &self.rest_cards()),
-        //             action,
-        //         )
-        //     })
-        //     .sum::<Option<Ratio<u64>>>()
-        //     .unwrap_or(Ratio::<u64>::zero())
-        //     .to_f64()
-        //     .expect("なんで")
-        //     .mul(200.0)
-        //     .powi(2);
-        // let b = (f64::from(self.my_score())).powi(2) - (f64::from(self.enemy_score())).powi(2);
-        // a + b
-        0.0
-    }
-    fn final_score_reward(&self) -> f64 {
-        if self.game_end() {
-            if self.my_score() > self.enemy_score() {
-                100.0 // 勝利
-            } else if self.my_score() < self.enemy_score() {
-                -100.0 // 敗北
-            } else {
-                0.0 // 引き分け
-            }
-        } else {
-            0.0
-        }
+        let a = self.calc_safe_reward();
+        let b = self.calc_score_reward();
+        let c = self.calc_position_reward();
+        a + b + c
     }
     fn actions(&self) -> Vec<Action> {
         fn attack_cards(hands: &[CardID], card: CardID) -> Option<Action> {
@@ -258,17 +261,18 @@ impl State for MyState {
 //     enemy_position: u8,
 //     game_end: bool,
 // }
-impl From<MyState> for [f32; 16] {
+impl From<MyState> for [f32; 15] {
     fn from(value: MyState) -> Self {
         let id = vec![f32::from(value.my_id.denote())];
-        let mut hands = value
+        let hands = value
             .hands
             .into_iter()
             .map(|x| f32::from(x.denote()))
-            .collect::<Vec<f32>>();
-        hands.resize(5, 0.0);
+            .collect::<Vec<f32>>()
+            .also(|hands| hands.resize(5, 0.0));
         let cards = value
-            .cards
+            .used
+            .get_nakami()
             .iter()
             .map(|&x| f32::from(x.denote()))
             .collect::<Vec<f32>>();
@@ -280,7 +284,6 @@ impl From<MyState> for [f32; 16] {
         let p1_score = vec![value.p1_score as f32];
         let my_position = vec![f32::from(value.p0_position)];
         let enemy_position = vec![f32::from(value.p1_position)];
-        let game_end = vec![f32::from(u8::from(value.game_end))];
         [
             id,
             hands,
@@ -289,11 +292,10 @@ impl From<MyState> for [f32; 16] {
             p1_score,
             my_position,
             enemy_position,
-            game_end,
         ]
         .concat()
         .try_into()
-        .expect("長さが16")
+        .expect("長さが15")
     }
 }
 
@@ -321,7 +323,7 @@ impl MyAgent {
             state: MyState {
                 my_id: id,
                 hands,
-                cards: RestCards::new(),
+                used: UsedCards::new(),
                 p0_score: 0,
                 p1_score: 0,
                 p0_position: position_0,
@@ -360,6 +362,7 @@ impl Agent<MyState> for MyAgent {
                         HandInfo(hand_info) => {
                             let hand_vec = hand_info.to_vec();
                             self.state.hands = hand_vec;
+
                             break;
                         }
                         Accept(_) => {}
@@ -373,7 +376,7 @@ impl Agent<MyState> for MyAgent {
                             break;
                         }
                         Played(played) => {
-                            self.state.cards.used_card(played.to_action());
+                            self.state.used.used_action(played.to_action());
                             break;
                         }
                         RoundEnd(round_end) => {
@@ -385,16 +388,21 @@ impl Agent<MyState> for MyAgent {
                                 1 => self.state.p1_score += 1,
                                 _ => {}
                             }
-                            self.state.cards = RestCards::new();
+                            self.state.used = UsedCards::new();
                             break;
                         }
                         GameEnd(game_end) => {
                             print(format!("ゲーム終わり! 勝者:{}", game_end.winner()).as_str())?;
                             print(if game_end.winner() == self.state.my_id.denote() {
-                                "勝ちました!"
+                                "AIが勝ちました!"
                             } else {
-                                "負けました!"
+                                ""
                             })?;
+                            print(format!("最終報酬:{}", self.state.reward()))?;
+                            print(format!(
+                                "safe_possibilityの寄与:{}",
+                                self.state.calc_safe_reward()
+                            ))?;
                             self.state.game_end = true;
                             break;
                         }

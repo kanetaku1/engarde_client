@@ -8,6 +8,7 @@ use std::{
     str::FromStr,
 };
 
+use apply::Also;
 use protocol::{ConnectionStart, PlayerID};
 use serde::{Deserialize, Serialize};
 
@@ -238,6 +239,68 @@ where
     Ok(())
 }
 
+/// 使ったカードの枚数をカード番号ごとに記録
+#[derive(Debug, PartialEq, Eq, Hash, Clone, Copy)]
+pub struct UsedCards {
+    used: [Maisuu; 5],
+}
+
+impl UsedCards {
+    /// 全部使われていない使ったおを作ります
+    pub fn new() -> Self {
+        Self {
+            used: [Maisuu::ZERO; 5],
+        }
+    }
+
+    /// カード番号と枚数から、使われたカードを更新します
+    pub fn used(&mut self, card: CardID, maisuu: Maisuu) {
+        match card {
+            CardID::One => self.used[0].saturating_sub(maisuu),
+            CardID::Two => self.used[1].saturating_sub(maisuu),
+            CardID::Three => self.used[2].saturating_sub(maisuu),
+            CardID::Four => self.used[3].saturating_sub(maisuu),
+            CardID::Five => self.used[4].saturating_sub(maisuu),
+        };
+    }
+
+    /// アクションから使われたカードを更新します
+    pub fn used_action(&mut self, action: Action) {
+        match action {
+            Action::Move(movement) => self.used(movement.card(), Maisuu::ONE),
+            Action::Attack(attack) => self.used(attack.card(), attack.quantity().saturating_mul(2)),
+        }
+    }
+
+    /// 中身
+    pub fn get_nakami(&self) -> [Maisuu; 5] {
+        self.used
+    }
+
+    /// 使用したカードの枚数の合計
+    pub fn sum(&self) -> u8 {
+        self.used.iter().map(|maisuu| maisuu.denote()).sum()
+    }
+
+    /// RestCardsが必要なやつばっかりなので、作っときました
+    pub fn to_restcards(&self, card_map: [Maisuu; 5]) -> RestCards {
+        let restcard_max = [Maisuu::MAX; 5];
+        let restcard: [Maisuu; 5] = restcard_max
+            .iter()
+            .zip(self.used.iter())
+            .zip(card_map.iter())
+            .map(|((&maisuu_rest, &maisuu_used), &maisuu_hand)| {
+                maisuu_rest
+                    .saturating_sub(maisuu_used)
+                    .saturating_sub(maisuu_hand)
+            })
+            .collect::<Vec<Maisuu>>()
+            .try_into()
+            .expect("配列`[Maisuu; 5]`に変換できなかった");
+        RestCards::from_slice(&restcard)
+    }
+}
+
 /// 残りのカード枚数(カード番号ごと)
 #[derive(Debug, PartialEq, Eq, Hash, Clone, Copy)]
 pub struct RestCards {
@@ -451,9 +514,7 @@ impl Action {
 
 impl From<Action> for [f32; 35] {
     fn from(value: Action) -> Self {
-        let mut arr = [0_f32; 35];
-        arr[value.as_index()] = 1.0;
-        arr
+        [0_f32; 35].also(|arr| arr[value.as_index()] = 1.0)
     }
 }
 
@@ -466,5 +527,74 @@ impl From<[f32; 35]> for Action {
             .map(|(i, _)| i)
             .expect("必ず最大値が存在する");
         Action::from_index(idx)
+    }
+}
+
+impl From<Action> for [f32; 3] {
+    fn from(value: Action) -> Self {
+        match value {
+            Action::Move(movement) => match movement.direction() {
+                Direction::Forward => [0.0, f32::from(movement.card().denote()), 1.0],
+                Direction::Back => [2.0, f32::from(movement.card().denote()), 1.0],
+            },
+            Action::Attack(attack) => {
+                let Attack { card, quantity } = attack;
+                [1.0, f32::from(card.denote()), f32::from(quantity.denote())]
+            }
+        }
+    }
+}
+
+impl From<[f32; 3]> for Action {
+    fn from(value: [f32; 3]) -> Self {
+        #[allow(clippy::float_cmp)]
+        fn card_id_from_f32(value: f32) -> CardID {
+            let value = value.round();
+            if value <= 1.0 {
+                CardID::One
+            } else if value == 2.0 {
+                CardID::Two
+            } else if value == 3.0 {
+                CardID::Three
+            } else if value == 4.0 {
+                CardID::Four
+            } else {
+                CardID::Five
+            }
+        }
+        #[allow(clippy::float_cmp)]
+        fn maisuu_from_f32(value: f32) -> Maisuu {
+            let value = value.round();
+            if value <= 1.0 {
+                Maisuu::ONE
+            } else if value == 2.0 {
+                Maisuu::TWO
+            } else if value == 3.0 {
+                Maisuu::THREE
+            } else if value == 4.0 {
+                Maisuu::FOUR
+            } else {
+                Maisuu::FIVE
+            }
+        }
+        let action = value[0].round();
+        #[allow(clippy::float_cmp)]
+        if action == 1.0 {
+            let card = card_id_from_f32(value[1]);
+            let quantity = maisuu_from_f32(value[2]);
+            Action::Attack(Attack { card, quantity })
+        } else if action == 0.0 || action <= 0.0 {
+            let card = card_id_from_f32(value[1]);
+            Action::Move(Movement {
+                card,
+                direction: Direction::Forward,
+            })
+        } else {
+            let card = card_id_from_f32(value[1]);
+            Action::Move(Movement {
+                card,
+                direction: Direction::Back,
+            })
+        }
     }
 }

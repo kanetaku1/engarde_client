@@ -10,17 +10,19 @@ use crate::{
     strategy::{explore::ExplorationStrategy, terminate::TerminationStrategy},
 };
 
-const BATCH: usize = 64;
+const BATCH: usize = 512;
 
 type QNetwork<const STATE_SIZE: usize, const ACTION_SIZE: usize, const INNER_SIZE: usize> = (
     (Linear<STATE_SIZE, INNER_SIZE>, ReLU),
     (Linear<INNER_SIZE, INNER_SIZE>, ReLU),
+    (Linear<INNER_SIZE,INNER_SIZE>,ReLU),
     Linear<INNER_SIZE, ACTION_SIZE>,
 );
 
 type QNetworkDevice<const STATE_SIZE: usize, const ACTION_SIZE: usize, const INNER_SIZE: usize> = (
     (nn::modules::Linear<STATE_SIZE, INNER_SIZE, f32, Cpu>, ReLU),
     (nn::modules::Linear<INNER_SIZE, INNER_SIZE, f32, Cpu>, ReLU),
+    (nn::modules::Linear<INNER_SIZE,INNER_SIZE,f32,Cpu>,ReLU),
     nn::modules::Linear<INNER_SIZE, ACTION_SIZE, f32, Cpu>,
 );
 
@@ -200,7 +202,7 @@ where
         &mut self,
         agent: &mut dyn Agent<S>,
         termination_strategy: &mut dyn TerminationStrategy<S>,
-        exploration_strategy: &dyn ExplorationStrategy<S>,
+        exploration_strategy: &mut dyn ExplorationStrategy<S>,
     ) {
         loop {
             // Initialize batch
