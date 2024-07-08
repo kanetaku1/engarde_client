@@ -1,43 +1,30 @@
-//! アルゴリズムによって動くクライアント
-
+//! ランダムに動きます
 use std::{
-    cmp::Ordering,
     collections::HashSet,
     hash::RandomState,
     io::{self, BufReader, BufWriter},
-    net::{SocketAddr, SocketAddrV4, TcpStream},
+    net::{SocketAddr, TcpStream},
 };
 
 use engarde_client::{
-    algorithm::{card_map_from_hands, ProbabilityTable},
-    algorithm2::{initial_move, middle_move, AcceptableNumbers},
     get_id, print,
     protocol::{BoardInfo, Evaluation, Messages, PlayAttack, PlayMovement, PlayerID, PlayerName},
-    read_stream, send_info, Action, Attack, CardID, Direction, Maisuu, Movement, UsedCards,
+    read_stream, send_info, Action, Attack, CardID, Direction, Maisuu, Movement,
 };
+use rand::{rngs::ThreadRng, seq::SliceRandom, thread_rng};
 
-use clap::Parser;
-
-struct MyStateAlg {
+struct MyState {
     id: PlayerID,
     hands: Vec<CardID>,
-    used: UsedCards,
     p0_position: u8,
     p1_position: u8,
 }
 
-impl MyStateAlg {
-    fn new(
-        id: PlayerID,
-        hands: Vec<CardID>,
-        used: UsedCards,
-        p0_position: u8,
-        p1_position: u8,
-    ) -> Self {
-        Self {
+impl MyState {
+    fn new(id: PlayerID, hands: Vec<CardID>, p0_position: u8, p1_position: u8) -> Self {
+        MyState {
             id,
             hands,
-            used,
             p0_position,
             p1_position,
         }
@@ -119,37 +106,21 @@ impl MyStateAlg {
             }
         }
     }
-}
 
-fn act(state: &MyStateAlg) -> Option<Action> {
-    let card_map = card_map_from_hands(&state.hands)?;
-    let distance = state.p1_position - state.p0_position;
-    let restcard = state.used.to_restcards(card_map);
-    let acceptable = AcceptableNumbers::new(card_map, restcard, distance);
-    let table = ProbabilityTable::new(&restcard);
-    let initial = initial_move(&card_map, distance, &acceptable).ok();
-    let middle = middle_move(&state.hands, distance, restcard, &table);
-    let det = initial.or(middle);
-    Some(det.unwrap_or({
-        let mut actions = state.actions();
-        actions.sort_unstable_by(|action1, action2| match action1 {
-            Action::Move(movement1) => match action2 {
-                Action::Move(movement2) => match movement1.direction() {
-                    Direction::Forward => match movement2.direction() {
-                        Direction::Forward => movement2.card().cmp(&movement1.card()),
-                        Direction::Back => Ordering::Less,
-                    },
-                    Direction::Back => match movement2.direction() {
-                        Direction::Forward => Ordering::Greater,
-                        Direction::Back => movement1.card().cmp(&movement2.card()),
-                    },
+    fn act(&self, rng: &mut ThreadRng) -> Option<Action> {
+        let actions = self.actions();
+        let actions = actions
+            .into_iter()
+            .filter(|x| match x {
+                Action::Move(m) => match m.direction() {
+                    Direction::Forward => true,
+                    Direction::Back => false,
                 },
-                Action::Attack(_) => Ordering::Greater,
-            },
-            Action::Attack(_) => Ordering::Less,
-        });
-        actions.first().copied()?
-    }))
+                Action::Attack(_) => true,
+            })
+            .collect::<Vec<Action>>();
+        actions.choose(rng).copied()
+    }
 }
 
 fn send_action(writer: &mut BufWriter<TcpStream>, action: Action) -> io::Result<()> {
@@ -159,33 +130,21 @@ fn send_action(writer: &mut BufWriter<TcpStream>, action: Action) -> io::Result<
     }
 }
 
-#[derive(Parser, Debug)]
-struct Arguments {
-    #[arg(long, short, default_value_t = String::from("127.0.0.1"))]
-    ip: String,
-    #[arg(long, short, default_value_t = String::from("12052"))]
-    port: String,
-}
-
-fn main() -> io::Result<()> {
-    let args = Arguments::parse();
-    let ip = format!("{}:{}", args.ip, args.port)
-        .parse::<SocketAddrV4>()
-        .expect("有効なIPアドレスではありません");
+fn random_main() -> io::Result<()> {
     // IPアドレスはいつか標準入力になると思います。
-    // let addr = SocketAddr::from(([127, 0, 0, 1], 12052));
-    let addr = ip;
+    let addr = SocketAddr::from(([127, 0, 0, 1], 12052));
     let stream = TcpStream::connect(addr)?;
     let (mut bufreader, mut bufwriter) =
         (BufReader::new(stream.try_clone()?), BufWriter::new(stream));
     let id = get_id(&mut bufreader)?;
+    let rng = &mut thread_rng();
     {
         let player_name = PlayerName::new("algorithm".to_string());
         send_info(&mut bufwriter, &player_name)?;
         let _ = read_stream(&mut bufreader)?;
     }
     {
-        let mut state = MyStateAlg::new(id, vec![], UsedCards::new(), 1, 23);
+        let mut state = MyState::new(id, vec![], 1, 23);
         loop {
             match Messages::parse(&read_stream(&mut bufreader)?) {
                 Ok(messages) => match messages {
@@ -197,23 +156,20 @@ fn main() -> io::Result<()> {
                     }
                     Messages::Accept(_) => (),
                     Messages::DoPlay(_) => {
-                        let action = act(&state).unwrap_or_else(|| panic!("行動決定不能"));
+                        let action = state.act(rng).unwrap_or_else(|| panic!("行動決定不能"));
                         send_info(&mut bufwriter, &Evaluation::new())?;
                         send_action(&mut bufwriter, action)?;
-                        state.used.used_action(action);
                     }
                     Messages::ServerError(e) => {
                         print("エラーもらった")?;
                         print(format!("{e:?}"))?;
                         break;
                     }
-                    Messages::Played(played) => state.used.used_action(played.to_action()),
-                    Messages::RoundEnd(_round_end) => {
-                        state.used = UsedCards::new();
-                    }
+                    Messages::Played(_) => {}
+                    Messages::RoundEnd(_round_end) => {}
                     Messages::GameEnd(game_end) => {
                         if game_end.winner() == state.id.denote() {
-                            print("algorithmの勝ち")?;
+                            print("randomの勝ち")?;
                         }
                         break;
                     }
@@ -226,4 +182,8 @@ fn main() -> io::Result<()> {
         }
     }
     Ok(())
+}
+
+fn main() -> io::Result<()> {
+    random_main()
 }
