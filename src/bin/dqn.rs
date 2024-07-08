@@ -2,8 +2,8 @@
 
 use std::{
     cmp::Ordering,
-    fs::{self, create_dir_all},
-    io::{self, BufReader, BufWriter},
+    fs::{self, create_dir_all,OpenOptions, File},
+    io::{self, BufReader, BufWriter, Write},
     net::{SocketAddr, SocketAddrV4, TcpStream},
 };
 
@@ -172,11 +172,11 @@ fn neary_best_action(state: &MyState, trainer: &DQNAgentTrainerContinuous) -> Op
 
 struct EpsilonGreedyContinuous {
     past_exp: DQNAgentTrainerContinuous,
-    epsilon: u64,
+    epsilon: f64,
 }
 
 impl EpsilonGreedyContinuous {
-    fn new(trainer: DQNAgentTrainerContinuous, start_epsilon: u64) -> Self {
+    fn new(trainer: DQNAgentTrainerContinuous, start_epsilon: f64) -> Self {
         EpsilonGreedyContinuous {
             past_exp: trainer,
             epsilon: start_epsilon,
@@ -186,7 +186,7 @@ impl EpsilonGreedyContinuous {
 
 impl ExplorationStrategy<MyState> for EpsilonGreedyContinuous {
     fn pick_action(&mut self, agent: &mut dyn Agent<MyState>) -> <MyState as State>::A {
-        let random = thread_rng().gen::<u64>();
+        let random = thread_rng().gen::<f64>();
         if random < self.epsilon {
             agent.pick_random_action()
         } else {
@@ -342,9 +342,9 @@ fn dqn_train(ip: SocketAddrV4) -> io::Result<()> {
     let mut trainer2 = DQNAgentTrainer::new(DISCOUNT_RATE, LEARNING_RATE);
     trainer2.import_model(past_exp);
     let epsilon = fs::read_to_string(format!("learned_dqn/{}/epsilon.txt", id.denote()))
-        .map(|eps_str| eps_str.parse::<u64>().expect("εが適切なu64値でない"))
-        .unwrap_or(u64::MAX);
-    let epsilon = (epsilon - (epsilon / 200)).max(u64::MAX / 20);
+        .map(|eps_str| eps_str.parse::<f64>().expect("εが適切なu64値でない"))
+        .unwrap_or(1.0);
+    let epsilon = (epsilon * DISCOUNT_RATE as f64).max(LEARNING_RATE as f64);
     let mut epsilon_greedy_exploration = EpsilonGreedyContinuous::new(trainer2, epsilon);
     trainer.train(
         &mut agent,
@@ -494,8 +494,26 @@ fn dqn_eval(ip: SocketAddrV4) -> io::Result<()> {
         &mut SinkStates {},
         &mut BestExplorationDqnContinuous::new(trainer),
     );
+    let total_games = agent.current_state().p0_score() + agent.current_state().p1_score();
+    let wins = agent.current_state().p0_score();
+    let win_rate = wins as f64 / total_games as f64;
+    // ファイルへの追記
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(format!("win_rate_history.txt"))?;
+
+    writeln!(file, "{}", win_rate)?;
     Ok(())
 }
+
+// fn save_to_txt(file_name: String, data: &Vec<f64>) -> io::Result<()> {
+//     let mut file = File::create(file_name)?;
+//     for value in data {
+//         writeln!(file, "{}", value.to_string())?;
+//     }
+//     Ok(())
+// }
 
 #[derive(Debug, Clone, ValueEnum)]
 enum Mode {
