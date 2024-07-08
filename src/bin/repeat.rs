@@ -14,7 +14,8 @@ const MAX_ROUND: u32 = 100;
 
 #[derive(ValueEnum, Clone, Debug)]
 enum Client {
-    Dqn,
+    Train,
+    Eval,
     Random,
     Algorithm,
     Aggressive,
@@ -23,9 +24,14 @@ enum Client {
 impl Client {
     fn execute(&self) -> Child {
         match self {
-            Self::Dqn => Command::new(".\\dqn.exe")
+            Self::Train => Command::new(".\\dqn.exe")
                 .arg("-m")
                 .arg("train")
+                .spawn()
+                .expect("dqn.exe起動失敗"),
+            Self::Eval => Command::new(".\\dqn.exe")
+                .arg("-m")
+                .arg("eval")
                 .spawn()
                 .expect("dqn.exe起動失敗"),
             Self::Random => Command::new(".\\random.exe")
@@ -44,7 +50,8 @@ impl Client {
 impl Display for Client {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result {
         let s = match self {
-            Self::Dqn => "dqn",
+            Self::Train => "train",
+            Self::Eval => "eval",
             Self::Random => "random",
             Self::Algorithm => "algorithm",
             Self::Aggressive => "aggressive",
