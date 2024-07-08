@@ -5,6 +5,11 @@ use dfdx::{
     prelude::*,
 };
 
+use std::{
+    fs::{self, OpenOptions, File},
+    io::{self, Write},
+};
+
 use crate::{
     mdp::{Agent, State},
     strategy::{explore::ExplorationStrategy, terminate::TerminationStrategy},

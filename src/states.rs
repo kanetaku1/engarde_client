@@ -141,7 +141,7 @@ impl MyState {
 
     #[allow(clippy::float_arithmetic)]
     fn calc_score_reward(&self) -> f64 {
-        (f64::from(self.my_score()) * 1000.0) - (f64::from(self.enemy_score()) * 1000.0)
+        (f64::from(self.my_score())) - (f64::from(self.enemy_score()))
     }
 
     fn distance_from_center(&self) -> i8 {
@@ -165,7 +165,10 @@ impl State for MyState {
         let a = self.calc_safe_reward();
         let b = self.calc_score_reward();
         let c = self.calc_position_reward();
-        a
+        if self.game_end() {
+            return b;
+        }
+        return a;
     }
     fn actions(&self) -> Vec<Action> {
         fn attack_cards(hands: &[CardID], card: CardID) -> Option<Action> {
@@ -332,10 +335,10 @@ impl MyAgent {
             },
         }
     }
-    pub fn has_won(&self) -> bool {
-        // ゲームが終了していて、エージェントのスコアが相手より高ければ勝利とする
-        self.state.game_end() && self.state.p0_score() > self.state.p1_score()
-    }
+    // pub fn has_won(&self) -> bool {
+    //     // ゲームが終了していて、エージェントのスコアが相手より高ければ勝利とする
+    //     self.state.game_end() && self.state.p0_score() > self.state.p1_score()
+    // }
 }
 
 impl Agent<MyState> for MyAgent {

@@ -45,7 +45,7 @@ const INNER_CONTINUOUS: usize = 128;
 const ACTION_SIZE_CONTINUOUS: usize = 3;
 
 const DISCOUNT_RATE: f32 = 0.9;
-const LEARNING_RATE: f32 = 0.1;
+const LEARNING_RATE: f32 = 0.2;
 
 /// ベストに近いアクションを返す
 #[allow(dead_code, clippy::too_many_lines)]
@@ -56,10 +56,17 @@ fn neary_best_action(state: &MyState, trainer: &DQNAgentTrainerContinuous) -> Op
         Some(best)
     } else {
         match best {
+            Action::Attack(_) => {
+                let mut actions = actions;
+                actions.sort_by_key(|action| match action {
+                    Action::Move(_) => 1,
+                    Action::Attack(_) => 0,
+                });
+                actions.first().copied()
+            }
             Action::Move(movement) => {
                 // 前進の場合、前進-攻撃-後退の順に並び替え
                 // 後退の場合、後退-攻撃-前進の順に並び替え
-                // (クソ長い)
                 fn ordering(
                     key_direction: Direction,
                     key_card: CardID,
@@ -70,105 +77,50 @@ fn neary_best_action(state: &MyState, trainer: &DQNAgentTrainerContinuous) -> Op
                         Action::Move(movement1) => {
                             let card1 = movement1.card();
                             let direction1 = movement1.direction();
-                            match direction1 {
-                                Direction::Forward => match action2 {
-                                    Action::Move(movement2) => {
-                                        let card2 = movement2.card();
-                                        let direction2 = movement2.direction();
-                                        match direction2 {
-                                            Direction::Forward => {
-                                                let key_card_i32 = i32::from(key_card.denote());
-                                                let card1_i32 = i32::from(card1.denote());
-                                                let card2_i32 = i32::from(card2.denote());
-                                                (card1_i32 - key_card_i32)
-                                                    .abs()
-                                                    .cmp(&(card2_i32 - key_card_i32).abs())
-                                            }
-                                            Direction::Back => match key_direction {
-                                                Direction::Forward => Ordering::Less,
-                                                Direction::Back => Ordering::Greater,
-                                            },
+                            match action2 {
+                                Action::Move(movement2) => {
+                                    let card2 = movement2.card();
+                                    let direction2 = movement2.direction();
+                                    let key_card_i32 = i32::from(key_card.denote());
+                                    let card1_i32 = i32::from(card1.denote());
+                                    let card2_i32 = i32::from(card2.denote());
+                                    match (direction1, direction2) {
+                                        (Direction::Forward, Direction::Forward) | 
+                                        (Direction::Back, Direction::Back) => {
+                                            (card1_i32 - key_card_i32).abs().cmp(&(card2_i32 - key_card_i32).abs())
                                         }
+                                        (Direction::Forward, Direction::Back) => Ordering::Less,
+                                        (Direction::Back, Direction::Forward) => Ordering::Greater,
                                     }
-                                    Action::Attack(_) => match key_direction {
-                                        Direction::Forward => Ordering::Less,
-                                        Direction::Back => Ordering::Greater,
-                                    },
-                                },
-                                Direction::Back => match action2 {
-                                    Action::Move(movement2) => {
-                                        let card2 = movement2.card();
-                                        let direction2 = movement2.direction();
-                                        match direction2 {
-                                            Direction::Forward => match key_direction {
-                                                Direction::Forward => Ordering::Greater,
-                                                Direction::Back => Ordering::Less,
-                                            },
-                                            Direction::Back => {
-                                                let key_card_i32 = i32::from(key_card.denote());
-                                                let card1_i32 = i32::from(card1.denote());
-                                                let card2_i32 = i32::from(card2.denote());
-                                                (card1_i32 - key_card_i32)
-                                                    .abs()
-                                                    .cmp(&(card2_i32 - key_card_i32).abs())
-                                            }
-                                        }
-                                    }
-                                    Action::Attack(_) => match key_direction {
-                                        Direction::Forward => Ordering::Greater,
-                                        Direction::Back => Ordering::Less,
-                                    },
+                                }
+                                Action::Attack(_) => match key_direction {
+                                    Direction::Forward => Ordering::Less,
+                                    Direction::Back => Ordering::Greater,
                                 },
                             }
                         }
                         Action::Attack(_) => match action2 {
-                            Action::Move(movement2) => {
-                                let direction2 = movement2.direction();
-                                match direction2 {
-                                    Direction::Forward => match key_direction {
-                                        Direction::Forward => Ordering::Greater,
-                                        Direction::Back => Ordering::Less,
-                                    },
-                                    Direction::Back => match key_direction {
-                                        Direction::Forward => Ordering::Less,
-                                        Direction::Back => Ordering::Greater,
-                                    },
-                                }
-                            }
+                            Action::Move(_) => match key_direction {
+                                Direction::Forward => Ordering::Greater,
+                                Direction::Back => Ordering::Less,
+                            },
                             Action::Attack(_) => Ordering::Equal,
                         },
                     }
                 }
+
                 let card = movement.card();
                 let direction = movement.direction();
-                match direction {
-                    Direction::Forward => {
-                        let mut actions = actions;
-                        actions.sort_by(|&action1, &action2| {
-                            ordering(Direction::Forward, card, action1, action2)
-                        });
-                        actions.first().copied()
-                    }
-                    Direction::Back => {
-                        let mut actions = actions;
-                        actions.sort_by(|&action1, &action2| {
-                            ordering(Direction::Back, card, action1, action2)
-                        });
-                        actions.first().copied()
-                    }
-                }
-            }
-            Action::Attack(_) => {
                 let mut actions = actions;
-                actions.sort_by_key(|action| match action {
-                    Action::Move(movement) => movement.card(),
-                    Action::Attack(attack) => attack.card(),
+                actions.sort_by(|&action1, &action2| {
+                    ordering(direction, card, action1, action2)
                 });
                 actions.first().copied()
             }
         }
     }
 }
+
 
 struct EpsilonGreedyContinuous {
     past_exp: DQNAgentTrainerContinuous,
@@ -343,7 +295,7 @@ fn dqn_train(ip: SocketAddrV4) -> io::Result<()> {
     trainer2.import_model(past_exp);
     let epsilon = fs::read_to_string(format!("learned_dqn/{}/epsilon.txt", id.denote()))
         .map(|eps_str| eps_str.parse::<f64>().expect("εが適切なu64値でない"))
-        .unwrap_or(1.0);
+        .unwrap_or(u64::MAX as f64);
     let epsilon = (epsilon * DISCOUNT_RATE as f64).max(LEARNING_RATE as f64);
     let mut epsilon_greedy_exploration = EpsilonGreedyContinuous::new(trainer2, epsilon);
     trainer.train(
@@ -380,6 +332,13 @@ fn dqn_train(ip: SocketAddrV4) -> io::Result<()> {
             epsilon_greedy_exploration.epsilon.to_string(),
         )?;
     }
+    // ファイルへの追記
+    let mut file =  OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(format!("learned_value_{}.txt", id.denote()))?;
+
+    writeln!(file, "{}", agent.current_state().reward())?;
     Ok(())
 }
 
@@ -495,13 +454,16 @@ fn dqn_eval(ip: SocketAddrV4) -> io::Result<()> {
         &mut BestExplorationDqnContinuous::new(trainer),
     );
     let total_games = agent.current_state().p0_score() + agent.current_state().p1_score();
-    let wins = agent.current_state().p0_score();
+    let wins = match id{
+        engarde_client::protocol::PlayerID::Zero => agent.current_state().p0_score(),
+        engarde_client::protocol::PlayerID::One => agent.current_state().p1_score(),
+    };
     let win_rate = wins as f64 / total_games as f64;
     // ファイルへの追記
     let mut file = OpenOptions::new()
         .create(true)
         .append(true)
-        .open(format!("win_rate_history.txt"))?;
+        .open(format!("win_rate_history_{}.txt",id.denote()))?;
 
     writeln!(file, "{}", win_rate)?;
     Ok(())
