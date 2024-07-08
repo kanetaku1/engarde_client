@@ -165,7 +165,7 @@ impl State for MyState {
         let a = self.calc_safe_reward();
         let b = self.calc_score_reward();
         let c = self.calc_position_reward();
-        a + b + c
+        a
     }
     fn actions(&self) -> Vec<Action> {
         fn attack_cards(hands: &[CardID], card: CardID) -> Option<Action> {
@@ -331,6 +331,10 @@ impl MyAgent {
                 game_end: false,
             },
         }
+    }
+    pub fn has_won(&self) -> bool {
+        // ゲームが終了していて、エージェントのスコアが相手より高ければ勝利とする
+        self.state.game_end() && self.state.p0_score() > self.state.p1_score()
     }
 }
 
