@@ -241,19 +241,10 @@ where
 
                 if termination_strategy.should_stop(s_t_next) {
                     dones[i] = true;
-                     // エピソード終了時の報酬を設定
-                     let final_reward = s_t_next.final_score_reward();
-                     for j in 0..=i {
-                         rewards[j] += final_reward as f32 * self.gamma.powi((i - j) as i32);
-                     }
                     break;
                 }
             }
-
-            // train the network
             self.train_dqn(states, actions, next_states, rewards, dones);
-
-            // terminate if the agent is done
             if termination_strategy.should_stop(s_t_next) {
                 break;
             }
