@@ -293,16 +293,27 @@ fn dqn_train(ip: SocketAddrV4) -> io::Result<()> {
     trainer.import_model(past_exp.clone());
     let mut trainer2 = DQNAgentTrainer::new(DISCOUNT_RATE, LEARNING_RATE);
     trainer2.import_model(past_exp);
-    let epsilon = fs::read_to_string(format!("learned_dqn/{}/epsilon.txt", id.denote()))
-        .map(|eps_str| eps_str.parse::<f64>().expect("εが適切なu64値でない"))
-        .unwrap_or(u64::MAX as f64);
-    let epsilon = (epsilon * DISCOUNT_RATE as f64).max(LEARNING_RATE as f64);
-    let mut epsilon_greedy_exploration = EpsilonGreedyContinuous::new(trainer2, epsilon);
+    // let epsilon = fs::read_to_string(format!("learned_dqn/{}/epsilon.txt", id.denote()))
+    //     .map(|eps_str| eps_str.parse::<f64>().expect("εが適切なu64値でない"))
+    //     .unwrap_or(1.0);
+    // let epsilon = (epsilon * DISCOUNT_RATE as f64).max(LEARNING_RATE as f64);
+    let mut epsilon_greedy_exploration = EpsilonGreedyContinuous::new(trainer2, LEARNING_RATE as f64);
+    let mut reward_history = Vec::new();
     trainer.train(
         &mut agent,
         &mut SinkStates {},
         &mut epsilon_greedy_exploration,
+        &mut reward_history,
     );
+    // ファイルへの追記
+    let mut file =  OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(format!("learned_value_{}.txt", id.denote()))?;
+
+    for value in reward_history {
+        writeln!(file, "{}", value.to_string())?;
+    }
     {
         let learned_values = trainer.export_learned_values();
         let linear_in = learned_values.0 .0;
@@ -332,13 +343,6 @@ fn dqn_train(ip: SocketAddrV4) -> io::Result<()> {
             epsilon_greedy_exploration.epsilon.to_string(),
         )?;
     }
-    // ファイルへの追記
-    let mut file =  OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(format!("learned_value_{}.txt", id.denote()))?;
-
-    writeln!(file, "{}", agent.current_state().reward())?;
     Ok(())
 }
 
@@ -453,7 +457,7 @@ fn dqn_eval(ip: SocketAddrV4) -> io::Result<()> {
         &mut SinkStates {},
         &mut BestExplorationDqnContinuous::new(trainer),
     );
-    let total_games = agent.current_state().p0_score() + agent.current_state().p1_score();
+    let total_games = 100;
     let wins = match id{
         engarde_client::protocol::PlayerID::Zero => agent.current_state().p0_score(),
         engarde_client::protocol::PlayerID::One => agent.current_state().p1_score(),

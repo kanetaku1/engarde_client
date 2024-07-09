@@ -208,6 +208,7 @@ where
         agent: &mut dyn Agent<S>,
         termination_strategy: &mut dyn TerminationStrategy<S>,
         exploration_strategy: &mut dyn ExplorationStrategy<S>,
+        reward_history: &mut Vec<f32>,
     ) {
         loop {
             // Initialize batch
@@ -243,6 +244,9 @@ where
                 actions[i] = action.into();
                 next_states[i] = (*s_t_next).clone().into();
                 rewards[i] = r_t_next as f32;
+                
+                // store reward
+                reward_history.push(rewards[i]);
 
                 if termination_strategy.should_stop(s_t_next) {
                     dones[i] = true;
