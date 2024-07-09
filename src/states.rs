@@ -32,6 +32,7 @@ pub struct MyState {
     p0_position: u8,
     p1_position: u8,
     game_end: bool,
+    round_winner: i8,
 }
 
 impl MyState {
@@ -87,6 +88,7 @@ impl MyState {
         p0_position: u8,
         p1_position: u8,
         game_end: bool,
+        round_winner: i8,
     ) -> Self {
         Self {
             my_id,
@@ -97,6 +99,7 @@ impl MyState {
             p0_position,
             p1_position,
             game_end,
+            round_winner,
         }
     }
 
@@ -136,7 +139,7 @@ impl MyState {
             .unwrap_or(Ratio::<u64>::zero())
             .to_f64()
             .expect("なんで")
-            .mul(2000.0)
+            .mul(10.0)
     }
 
     #[allow(clippy::float_arithmetic)]
@@ -165,10 +168,13 @@ impl State for MyState {
         let a = self.calc_safe_reward();
         let b = self.calc_score_reward();
         let c = self.calc_position_reward();
-        if self.game_end() {
-            return b;
+        if self.round_winner == self.my_id.denote() as i8 {
+            return 1000.0;
+        } else if self.round_winner == -1 {
+            return a;
+        } else {
+            return -1000.0;
         }
-        return a;
     }
     fn actions(&self) -> Vec<Action> {
         fn attack_cards(hands: &[CardID], card: CardID) -> Option<Action> {
@@ -332,6 +338,7 @@ impl MyAgent {
                 p0_position: position_0,
                 p1_position: position_1,
                 game_end: false,
+                round_winner: -1,
             },
         }
     }
@@ -365,6 +372,7 @@ impl Agent<MyState> for MyAgent {
                                 (board_info.p0_position(), board_info.p1_position());
                             (self.state.p0_score, self.state.p1_score) =
                                 (board_info.p0_score(), board_info.p1_score());
+                            self.state.round_winner = -1;
                         }
                         HandInfo(hand_info) => {
                             let hand_vec = hand_info.to_vec();
@@ -396,6 +404,7 @@ impl Agent<MyState> for MyAgent {
                                 _ => {}
                             }
                             self.state.used = UsedCards::new();
+                            self.state.round_winner = round_end.round_winner();
                             break;
                         }
                         GameEnd(game_end) => {
