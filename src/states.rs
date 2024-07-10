@@ -32,6 +32,7 @@ pub struct MyState {
     p0_position: u8,
     p1_position: u8,
     game_end: bool,
+    prev_action: Option<Action>,
     round_winner: i8,
 }
 
@@ -88,6 +89,7 @@ impl MyState {
         p0_position: u8,
         p1_position: u8,
         game_end: bool,
+        prev_action: Option<Action>,
         round_winner: i8,
     ) -> Self {
         Self {
@@ -99,6 +101,7 @@ impl MyState {
             p0_position,
             p1_position,
             game_end,
+            prev_action,
             round_winner,
         }
     }
@@ -168,10 +171,20 @@ impl State for MyState {
         let a = self.calc_safe_reward();
         let b = self.calc_score_reward();
         let c = self.calc_position_reward();
+
         if self.round_winner == self.my_id.denote() as i8 {
             return 1000.0;
         } else if self.round_winner == -1 {
-            return a;
+            match self.prev_action {
+                Some(action) => match action {
+                    Action::Attack(_) => return 50.0,
+                    Action::Move(m) => match m.direction {
+                        Direction::Forward => return 30.0,
+                        Direction::Back => return 10.0,
+                    }
+                }
+                None => return 0.0
+            }
         } else {
             return -1000.0;
         }
@@ -300,7 +313,7 @@ impl From<MyState> for [f32; 15] {
             p0_score,
             p1_score,
             my_position,
-            enemy_position,
+            enemy_position,           
         ]
         .concat()
         .try_into()
@@ -338,6 +351,7 @@ impl MyAgent {
                 p0_position: position_0,
                 p1_position: position_1,
                 game_end: false,
+                prev_action: None,
                 round_winner: -1,
             },
         }
@@ -355,8 +369,8 @@ impl Agent<MyState> for MyAgent {
     fn take_action(&mut self, &action: &Action) {
         fn send_action(writer: &mut BufWriter<TcpStream>, action: Action) -> io::Result<()> {
             match action {
-                Action::Move(m) => send_info(writer, &PlayMovement::from_info(m)),
                 Action::Attack(a) => send_info(writer, &PlayAttack::from_info(a)),
+                Action::Move(m) => send_info(writer, &PlayMovement::from_info(m)),
             }
         }
         use Messages::{
@@ -377,13 +391,13 @@ impl Agent<MyState> for MyAgent {
                         HandInfo(hand_info) => {
                             let hand_vec = hand_info.to_vec();
                             self.state.hands = hand_vec;
-
                             break;
                         }
                         Accept(_) => {}
                         DoPlay(_) => {
                             send_info(&mut self.writer, &Evaluation::new())?;
                             send_action(&mut self.writer, action)?;
+                            self.state.prev_action = Some(action);
                         }
                         ServerError(e) => {
                             print("エラーもらった")?;
@@ -408,17 +422,17 @@ impl Agent<MyState> for MyAgent {
                             break;
                         }
                         GameEnd(game_end) => {
-                            print(format!("ゲーム終わり! 勝者:{}", game_end.winner()).as_str())?;
+                            // print(format!(" 勝者:{}", game_end.winner()).as_str())?;
                             print(if game_end.winner() == self.state.my_id.denote() {
-                                "AIが勝ちました!"
+                                "AIの勝ち!"
                             } else {
                                 ""
                             })?;
-                            print(format!("最終報酬:{}", self.state.reward()))?;
-                            print(format!(
-                                "safe_possibilityの寄与:{}",
-                                self.state.calc_safe_reward()
-                            ))?;
+                            // print(format!("最終報酬:{}", self.state.reward()))?;
+                            // print(format!(
+                            //     "safe_possibilityの寄与:{}",
+                            //     self.state.calc_safe_reward()
+                            // ))?;
                             self.state.game_end = true;
                             break;
                         }
