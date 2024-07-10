@@ -16,6 +16,7 @@ use crate::{
 };
 
 const BATCH: usize = 512;
+const TARGET_UPDATE_FREQ: usize = 100; // ターゲットネットワークの更新頻度
 
 type QNetwork<const STATE_SIZE: usize, const ACTION_SIZE: usize, const INNER_SIZE: usize> = (
     (Linear<STATE_SIZE, INNER_SIZE>, ReLU),
@@ -136,6 +137,7 @@ pub struct DQNAgentTrainer<
     dev: Cpu,
     phantom: std::marker::PhantomData<S>,
     replay_buffer: ReplayBuffer<STATE_SIZE, ACTION_SIZE, BUFFER_SIZE>,
+    update_counter: usize,
 }
 
 impl<S, const STATE_SIZE: usize, const ACTION_SIZE: usize, const INNER_SIZE: usize, const BUFFER_SIZE: usize>
@@ -182,8 +184,9 @@ where
             target_q_net,
             sgd,
             dev,
-            phantom: std::marker::PhantomData,
             replay_buffer: ReplayBuffer::new(),
+            phantom: std::marker::PhantomData,
+            update_counter: 0,
         }
     }
 
@@ -306,7 +309,11 @@ where
             self.q_network.zero_grads(&mut grads);
         }
 
-        self.target_q_net.clone_from(&self.q_network);
+        self.update_counter += 1;
+        // ターゲットネットワークの更新頻度をチェック
+        if self.update_counter % TARGET_UPDATE_FREQ == 0 {
+            self.target_q_net.clone_from(&self.q_network);
+        }
     }
 
     /// Trains this [DQNAgentTrainer] using the given [ExplorationStrategy] and
