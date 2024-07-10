@@ -32,7 +32,7 @@ use engarde_client::{
     Action, CardID, Direction,
 };
 
-type DQNAgentTrainerContinuous = DQNAgentTrainer<MyState, 15, 3, 128>;
+type DQNAgentTrainerContinuous = DQNAgentTrainer<MyState, 15, 3, 128, 512>;
 type WeightInTensor = Tensor<(Const<INNER_CONTINUOUS>, Const<15>), f32, Cpu>;
 type BiasInTensor = Tensor<(Const<INNER_CONTINUOUS>,), f32, Cpu>;
 type WeightInnerTensor =
@@ -44,8 +44,8 @@ type BiasOutTensor = Tensor<(Const<ACTION_SIZE_CONTINUOUS>,), f32, Cpu>;
 const INNER_CONTINUOUS: usize = 128;
 const ACTION_SIZE_CONTINUOUS: usize = 3;
 
-const DISCOUNT_RATE: f32 = 0.9;
-const LEARNING_RATE: f32 = 0.2;
+const DISCOUNT_RATE: f32 = 0.99;
+const LEARNING_RATE: f32 = 0.001;
 
 /// ベストに近いアクションを返す
 #[allow(dead_code, clippy::too_many_lines)]
@@ -124,29 +124,43 @@ fn neary_best_action(state: &MyState, trainer: &DQNAgentTrainerContinuous) -> Op
 
 struct EpsilonGreedyContinuous {
     past_exp: DQNAgentTrainerContinuous,
-    epsilon: f64,
+    start_epsilon: f64,
+    min_epsilon: f64,
+    epsilon_decay: f64,
+    step: usize, // トレーニングのステップ数を管理する変数
 }
 
 impl EpsilonGreedyContinuous {
-    fn new(trainer: DQNAgentTrainerContinuous, start_epsilon: f64) -> Self {
+    fn new(trainer: DQNAgentTrainerContinuous, start_epsilon: f64, min_epsilon: f64, epsilon_decay: f64) -> Self {
         EpsilonGreedyContinuous {
             past_exp: trainer,
-            epsilon: start_epsilon,
+            start_epsilon,
+            min_epsilon,
+            epsilon_decay, 
+            step: 0,  
         }
+    }
+    fn get_epsilon(&self) -> f64 {
+        self.min_epsilon + (self.start_epsilon - self.min_epsilon) * (-self.epsilon_decay * self.step as f64).exp()
+    }
+    fn increment_step(&mut self) {
+        self.step += 1; // ステップ数をインクリメント
     }
 }
 
 impl ExplorationStrategy<MyState> for EpsilonGreedyContinuous {
     fn pick_action(&mut self, agent: &mut dyn Agent<MyState>) -> <MyState as State>::A {
+        let epsilon = self.get_epsilon();
+        self.increment_step();
         let random = thread_rng().gen::<f64>();
-        if random < self.epsilon {
+        if random < epsilon {
             agent.pick_random_action()
         } else {
             match neary_best_action(agent.current_state(), &self.past_exp) {
                 Some(action) => {
                     agent.take_action(&action);
                     action
-                }
+                },
                 None => agent.pick_random_action(),
             }
         }
@@ -297,7 +311,10 @@ fn dqn_train(ip: SocketAddrV4) -> io::Result<()> {
     //     .map(|eps_str| eps_str.parse::<f64>().expect("εが適切なu64値でない"))
     //     .unwrap_or(1.0);
     // let epsilon = (epsilon * DISCOUNT_RATE as f64).max(LEARNING_RATE as f64);
-    let mut epsilon_greedy_exploration = EpsilonGreedyContinuous::new(trainer2, LEARNING_RATE as f64);
+    let start_epsilon = 1.0;
+    let min_epsilon = 0.1;
+    let epsilon_decay = 0.01;
+    let mut epsilon_greedy_exploration = EpsilonGreedyContinuous::new(trainer2, start_epsilon, min_epsilon, epsilon_decay);
     let mut reward_history = Vec::new();
     trainer.train(
         &mut agent,
@@ -306,14 +323,14 @@ fn dqn_train(ip: SocketAddrV4) -> io::Result<()> {
         &mut reward_history,
     );
     // ファイルへの追記
-    let mut file =  OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(format!("learned_value_{}.txt", id.denote()))?;
+    // let mut file =  OpenOptions::new()
+    //     .create(true)
+    //     .append(true)
+    //     .open(format!("learned_value_{}.txt", id.denote()))?;
 
-    for value in reward_history {
-        writeln!(file, "{}", value.to_string())?;
-    }
+    // for value in reward_history {
+    //     writeln!(file, "{}", value.to_string())?;
+    // }
     {
         let learned_values = trainer.export_learned_values();
         let linear_in = learned_values.0 .0;
@@ -338,10 +355,10 @@ fn dqn_train(ip: SocketAddrV4) -> io::Result<()> {
         bias2.save_to_npy(files.bias2)?;
         weight_out.save_to_npy(files.weight_out)?;
         bias_out.save_to_npy(files.bias_out)?;
-        fs::write(
-            format!("learned_dqn/{}/epsilon.txt", id.denote()),
-            epsilon_greedy_exploration.epsilon.to_string(),
-        )?;
+        // fs::write(
+        //     format!("learned_dqn/{}/epsilon.txt", id.denote()),
+        //     epsilon_greedy_exploration.epsilon.to_string(),
+        // )?;
     }
     Ok(())
 }
