@@ -5,10 +5,10 @@ use dfdx::{
     prelude::*,
 };
 
-use std::{
-    fs::{self, OpenOptions, File},
-    io::{self, Write},
-};
+// use std::{
+//     fs::{self, File, OpenOptions},
+//     io::{self, BufRead, Write},
+// };
 
 use crate::{
     mdp::{Agent, State},
@@ -37,12 +37,92 @@ type QNetworkDevice<const STATE_SIZE: usize, const ACTION_SIZE: usize, const INN
 /// actions in a given state.
 ///
 /// The code is partially taken from https://github.com/coreylowman/dfdx/blob/main/examples/rl-dqn.rs.
-///
+
+use rand::seq::SliceRandom;
+use rand::thread_rng;
+
+struct ReplayBuffer<const STATE_SIZE: usize, const ACTION_SIZE: usize, const BUFFER_SIZE: usize> {
+    states: Vec<[f32; STATE_SIZE]>,
+    actions: Vec<[f32; ACTION_SIZE]>,
+    rewards: Vec<f32>,
+    next_states: Vec<[f32; STATE_SIZE]>,
+    dones: Vec<bool>,
+    index: usize,
+    full: bool,
+}
+
+impl<const STATE_SIZE: usize, const ACTION_SIZE: usize, const BUFFER_SIZE: usize> ReplayBuffer<STATE_SIZE, ACTION_SIZE, BUFFER_SIZE> {
+    pub fn new() -> Self {
+        Self {
+            states: Vec::with_capacity(BUFFER_SIZE),
+            actions: Vec::with_capacity(BUFFER_SIZE),
+            rewards: Vec::with_capacity(BUFFER_SIZE),
+            next_states: Vec::with_capacity(BUFFER_SIZE),
+            dones: Vec::with_capacity(BUFFER_SIZE),
+            index: 0,
+            full: false,
+        }
+    }
+
+    pub fn add(&mut self, state: [f32; STATE_SIZE], action: [f32; ACTION_SIZE], reward: f32, next_state: [f32; STATE_SIZE], done: bool) {
+        if self.states.len() < BUFFER_SIZE {
+            self.states.push(state);
+            self.actions.push(action);
+            self.rewards.push(reward);
+            self.next_states.push(next_state);
+            self.dones.push(done);
+        } else {
+            self.states[self.index] = state;
+            self.actions[self.index] = action;
+            self.rewards[self.index] = reward;
+            self.next_states[self.index] = next_state;
+            self.dones[self.index] = done;
+        }
+
+        self.index = (self.index + 1) % BUFFER_SIZE;
+        if self.index == 0 {
+            self.full = true;
+        }
+    }
+
+    pub fn sample(&self, batch_size: usize) -> Vec<([f32; STATE_SIZE], [f32; ACTION_SIZE], f32, [f32; STATE_SIZE], bool)> {
+        let mut rng = thread_rng();
+        let sample_size = if self.full { BUFFER_SIZE } else { self.index };
+        let mut indices: Vec<usize> = (0..sample_size).collect();
+        indices.shuffle(&mut rng);
+
+        indices.into_iter().take(batch_size).map(|i| {
+            (self.states[i], self.actions[i], self.rewards[i], self.next_states[i], self.dones[i])
+        }).collect()
+    }
+}
+
+fn unzip_n<const STATE_SIZE: usize, const ACTION_SIZE: usize>(
+    vec: Vec<([f32; STATE_SIZE], [f32; ACTION_SIZE], f32, [f32; STATE_SIZE], bool)>,
+) -> (Vec<[f32; STATE_SIZE]>, Vec<[f32; ACTION_SIZE]>, Vec<f32>, Vec<[f32; STATE_SIZE]>, Vec<bool>) {
+    let mut states = Vec::with_capacity(vec.len());
+    let mut actions = Vec::with_capacity(vec.len());
+    let mut rewards = Vec::with_capacity(vec.len());
+    let mut next_states = Vec::with_capacity(vec.len());
+    let mut dones = Vec::with_capacity(vec.len());
+
+    for (state, action, reward, next_state, done) in vec {
+        states.push(state);
+        actions.push(action);
+        rewards.push(reward);
+        next_states.push(next_state);
+        dones.push(done);
+    }
+
+    (states, actions, rewards, next_states, dones)
+}
+
 pub struct DQNAgentTrainer<
     S,
     const STATE_SIZE: usize,
     const ACTION_SIZE: usize,
     const INNER_SIZE: usize,
+    const BUFFER_SIZE: usize,
 > where
     S: State + Into<[f32; STATE_SIZE]>,
     S::A: Into<[f32; ACTION_SIZE]>,
@@ -55,10 +135,11 @@ pub struct DQNAgentTrainer<
     sgd: Sgd<QNetworkDevice<STATE_SIZE, ACTION_SIZE, INNER_SIZE>, f32, Cpu>,
     dev: Cpu,
     phantom: std::marker::PhantomData<S>,
+    replay_buffer: ReplayBuffer<STATE_SIZE, ACTION_SIZE, BUFFER_SIZE>,
 }
 
-impl<S, const STATE_SIZE: usize, const ACTION_SIZE: usize, const INNER_SIZE: usize>
-    DQNAgentTrainer<S, STATE_SIZE, ACTION_SIZE, INNER_SIZE>
+impl<S, const STATE_SIZE: usize, const ACTION_SIZE: usize, const INNER_SIZE: usize, const BUFFER_SIZE: usize>
+    DQNAgentTrainer<S, STATE_SIZE, ACTION_SIZE, INNER_SIZE, BUFFER_SIZE>
 where
     S: State + Into<[f32; STATE_SIZE]>,
     S::A: Into<[f32; ACTION_SIZE]>,
@@ -78,7 +159,7 @@ where
     pub fn new(
         gamma: f32,
         learning_rate: f32,
-    ) -> DQNAgentTrainer<S, STATE_SIZE, ACTION_SIZE, INNER_SIZE> {
+    ) -> DQNAgentTrainer<S, STATE_SIZE, ACTION_SIZE, INNER_SIZE, BUFFER_SIZE> {
         let dev = AutoDevice::default();
 
         // initialize model
@@ -102,6 +183,7 @@ where
             sgd,
             dev,
             phantom: std::marker::PhantomData,
+            replay_buffer: ReplayBuffer::new(),
         }
     }
 
@@ -147,57 +229,83 @@ where
         rewards: [f32; BATCH],
         dones: [bool; BATCH],
     ) {
-        self.target_q_net.clone_from(&self.q_network);
-        let mut grads = self.q_network.alloc_grads();
+        // self.target_q_net.clone_from(&self.q_network);
+        // let mut grads = self.q_network.alloc_grads();
 
-        let dones: Tensor<Rank1<BATCH>, f32, _> =
-            self.dev.tensor(dones.map(|d| if d { 1f32 } else { 0f32 }));
+        // let dones: Tensor<Rank1<BATCH>, f32, _> =
+        //     self.dev.tensor(dones.map(|d| if d { 1f32 } else { 0f32 }));
+        // let rewards = self.dev.tensor(rewards);
+
+        // // Convert to tensors and normalize the states for better training
+        // let states: Tensor<Rank2<BATCH, STATE_SIZE>, f32, _> =
+        //     self.dev.tensor(*states).normalize::<Axis<1>>(0.001);
+
+        // // Convert actions to tensors and get the max action for each batch
+        // let actions: Tensor<Rank1<BATCH>, usize, _> = self.dev.tensor(actions.map(|a| {
+        //     let mut max_idx = 0;
+        //     let mut max_val = 0f32;
+        //     for (i, v) in a.iter().enumerate() {
+        //         if *v > max_val {
+        //             max_val = *v;
+        //             max_idx = i;
+        //         }
+        //     }
+        //     max_idx
+        // }));
+
+        // // Convert to tensors and normalize the states for better training
+        // let next_states: Tensor<Rank2<BATCH, STATE_SIZE>, f32, _> =
+        //     self.dev.tensor(*next_states).normalize::<Axis<1>>(0.001);
+
+        // // Compute the estimated Q-value for the action
+        // for _step in 0..20 {
+        //     let q_values = self.q_network.forward(states.trace(grads));
+
+        //     let action_qs = q_values.select(actions.clone());
+
+        //     // targ_q = R + discount * max(Q(S'))
+        //     // curr_q = Q(S)[A]
+        //     // loss = huber(curr_q, targ_q, 1)
+        //     let next_q_values = self.target_q_net.forward(next_states.clone());
+        //     let max_next_q = next_q_values.max::<Rank1<BATCH>, _>();
+        //     let target_q = (max_next_q * (-dones.clone() + 1.0)) * self.gamma + rewards.clone();
+
+        //     let loss = huber_loss(action_qs, target_q, 1.0);
+
+        //     grads = loss.backward();
+
+        //     // update weights with optimizer
+        //     self.sgd
+        //         .update(&mut self.q_network, &grads)
+        //         .expect("Unused params");
+        //     self.q_network.zero_grads(&mut grads);
+        // }
+        // self.target_q_net.clone_from(&self.q_network);
+        let dones: Tensor<Rank1<BATCH>, f32, _> = self.dev.tensor(dones.map(|d| if d { 1f32 } else { 0f32 }));
         let rewards = self.dev.tensor(rewards);
 
-        // Convert to tensors and normalize the states for better training
-        let states: Tensor<Rank2<BATCH, STATE_SIZE>, f32, _> =
-            self.dev.tensor(*states).normalize::<Axis<1>>(0.001);
+        let states: Tensor<Rank2<BATCH, STATE_SIZE>, f32, _> = self.dev.tensor(*states).normalize::<Axis<1>>(0.01);
+        let actions: Tensor<Rank1<BATCH>, usize, _> = self.dev.tensor(actions.map(|a| a.iter().position(|&x| x == 1.0).unwrap()));
 
-        // Convert actions to tensors and get the max action for each batch
-        let actions: Tensor<Rank1<BATCH>, usize, _> = self.dev.tensor(actions.map(|a| {
-            let mut max_idx = 0;
-            let mut max_val = 0f32;
-            for (i, v) in a.iter().enumerate() {
-                if *v > max_val {
-                    max_val = *v;
-                    max_idx = i;
-                }
-            }
-            max_idx
-        }));
+        let next_states: Tensor<Rank2<BATCH, STATE_SIZE>, f32, _> = self.dev.tensor(*next_states).normalize::<Axis<1>>(0.01);
 
-        // Convert to tensors and normalize the states for better training
-        let next_states: Tensor<Rank2<BATCH, STATE_SIZE>, f32, _> =
-            self.dev.tensor(*next_states).normalize::<Axis<1>>(0.001);
-
-        // Compute the estimated Q-value for the action
         for _step in 0..20 {
-            let q_values = self.q_network.forward(states.trace(grads));
-
+            let q_values = self.q_network.forward(states.trace(self.q_network.alloc_grads()));
             let action_qs = q_values.select(actions.clone());
 
-            // targ_q = R + discount * max(Q(S'))
-            // curr_q = Q(S)[A]
-            // loss = huber(curr_q, targ_q, 1)
             let next_q_values = self.target_q_net.forward(next_states.clone());
             let max_next_q = next_q_values.max::<Rank1<BATCH>, _>();
             let target_q = (max_next_q * (-dones.clone() + 1.0)) * self.gamma + rewards.clone();
 
             let loss = huber_loss(action_qs, target_q, 1.0);
+            let mut grads = loss.backward();
 
-            grads = loss.backward();
-
-            // update weights with optimizer
             self.sgd
                 .update(&mut self.q_network, &grads)
                 .expect("Unused params");
             self.q_network.zero_grads(&mut grads);
         }
+
         self.target_q_net.clone_from(&self.q_network);
     }
 
@@ -212,27 +320,28 @@ where
     ) {
         loop {
             // Initialize batch
-            let mut states: Box<[[f32; STATE_SIZE]; BATCH]> = {
-                let b = vec![0.0; STATE_SIZE].into_boxed_slice();
-                let big = unsafe { Box::from_raw(Box::into_raw(b) as *mut [f32; STATE_SIZE]) };
+            // let mut states: Box<[[f32; STATE_SIZE]; BATCH]> = {
+            //     let b = vec![0.0; STATE_SIZE].into_boxed_slice();
+            //     let big = unsafe { Box::from_raw(Box::into_raw(b) as *mut [f32; STATE_SIZE]) };
 
-                let b = vec![*big; BATCH].into_boxed_slice();
-                unsafe { Box::from_raw(Box::into_raw(b) as *mut [[f32; STATE_SIZE]; BATCH]) }
-            };
-            let mut actions: [[f32; ACTION_SIZE]; BATCH] = [[0.0; ACTION_SIZE]; BATCH];
-            let mut next_states: Box<[[f32; STATE_SIZE]; BATCH]> = {
-                let b = vec![0.0; STATE_SIZE].into_boxed_slice();
-                let big = unsafe { Box::from_raw(Box::into_raw(b) as *mut [f32; STATE_SIZE]) };
+            //     let b = vec![*big; BATCH].into_boxed_slice();
+            //     unsafe { Box::from_raw(Box::into_raw(b) as *mut [[f32; STATE_SIZE]; BATCH]) }
+            // };
+            // let mut actions: [[f32; ACTION_SIZE]; BATCH] = [[0.0; ACTION_SIZE]; BATCH];
+            // let mut next_states: Box<[[f32; STATE_SIZE]; BATCH]> = {
+            //     let b = vec![0.0; STATE_SIZE].into_boxed_slice();
+            //     let big = unsafe { Box::from_raw(Box::into_raw(b) as *mut [f32; STATE_SIZE]) };
 
-                let b = vec![*big; BATCH].into_boxed_slice();
-                unsafe { Box::from_raw(Box::into_raw(b) as *mut [[f32; STATE_SIZE]; BATCH]) }
-            };
-            let mut rewards: [f32; BATCH] = [0.0; BATCH];
-            let mut dones = [false; BATCH];
+            //     let b = vec![*big; BATCH].into_boxed_slice();
+            //     unsafe { Box::from_raw(Box::into_raw(b) as *mut [[f32; STATE_SIZE]; BATCH]) }
+            // };
+            // let mut rewards: [f32; BATCH] = [0.0; BATCH];
+            // let mut dones = [false; BATCH];
 
+            let mut round_reward = 0.0;
             let mut s_t_next = agent.current_state();
 
-            for i in 0..BATCH {
+            for _ in 0..BATCH {
                 let s_t = agent.current_state().clone();
                 let action = exploration_strategy.pick_action(agent);
 
@@ -240,20 +349,32 @@ where
                 s_t_next = agent.current_state();
                 let r_t_next = s_t_next.reward();
 
-                states[i] = s_t.into();
-                actions[i] = action.into();
-                next_states[i] = (*s_t_next).clone().into();
-                rewards[i] = r_t_next as f32;
-                
-                // store reward
-                reward_history.push(rewards[i]);
-
+                self.replay_buffer.add(
+                    s_t.into(), 
+                    action.into(), 
+                    r_t_next as f32, 
+                    <S as Clone>::clone(&(*s_t_next)).into(), 
+                    termination_strategy.should_stop(s_t_next)
+                );
+                // states[i] = s_t.into();
+                // actions[i] = action.into();
+                // next_states[i] = (*s_t_next).clone().into();
+                // rewards[i] = r_t_next as f32;
+                // round_reward += rewards[i];
+                round_reward += r_t_next as f32;
                 if termination_strategy.should_stop(s_t_next) {
-                    dones[i] = true;
+                    // dones[i] = true;
                     break;
                 }
             }
-            self.train_dqn(states, actions, next_states, rewards, dones);
+            reward_history.push(round_reward);
+
+            if self.replay_buffer.full {
+                let batch = self.replay_buffer.sample(BATCH);
+                let (states,actions, rewards, next_states, dones) = unzip_n(batch);
+                self.train_dqn(Box::new(states.try_into().unwrap()), actions.try_into().unwrap(), Box::new(next_states.try_into().unwrap()), rewards.try_into().unwrap(), dones.try_into().unwrap());
+            }
+            // self.train_dqn(states, actions, next_states, rewards, dones);
             if termination_strategy.should_stop(s_t_next) {
                 break;
             }
@@ -261,14 +382,14 @@ where
     }
 }
 
-impl<S, const STATE_SIZE: usize, const ACTION_SIZE: usize, const INNER_SIZE: usize> Default
-    for DQNAgentTrainer<S, STATE_SIZE, ACTION_SIZE, INNER_SIZE>
+impl<S, const STATE_SIZE: usize, const ACTION_SIZE: usize, const INNER_SIZE: usize, const BUFFER_SIZE: usize> Default
+    for DQNAgentTrainer<S, STATE_SIZE, ACTION_SIZE, INNER_SIZE, BUFFER_SIZE>
 where
     S: State + Into<[f32; STATE_SIZE]>,
     S::A: Into<[f32; ACTION_SIZE]>,
     S::A: From<[f32; ACTION_SIZE]>,
 {
     fn default() -> Self {
-        Self::new(0.99, 1e-3)
+        Self::new(0.99, 0.01)
     }
 }
