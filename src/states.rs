@@ -123,7 +123,7 @@ impl MyState {
     fn calc_dist(&self) -> u8 {
         self.p1_position - self.p0_position
     }
-
+//ネスに聞く
     fn calc_safe_reward(&self) -> f64 {
         let actions = self.actions();
         let card_map = card_map_from_hands(&self.hands).expect("安心して");
