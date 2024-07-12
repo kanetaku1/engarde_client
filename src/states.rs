@@ -172,22 +172,49 @@ impl State for MyState {
         let b = self.calc_score_reward();
         let c = self.calc_position_reward();
 
-        if self.round_winner == self.my_id.denote() as i8 {
-            return 1000.0;
-        } else if self.round_winner == -1 {
-            match self.prev_action {
-                Some(action) => match action {
-                    Action::Attack(_) => return 50.0,
-                    Action::Move(m) => match m.direction {
-                        Direction::Forward => return 30.0,
-                        Direction::Back => return 10.0,
+        // if self.round_winner == self.my_id.denote() as i8 {
+        //     return 1000.0;
+        // } else if self.round_winner == -1 {
+        //     match self.prev_action {
+        //         Some(action) => match action {
+        //             Action::Attack(_) => return 50.0,
+        //             Action::Move(m) => match m.direction {
+        //                 Direction::Forward => return 30.0,
+        //                 Direction::Back => return 10.0,
+        //             }
+        //         }
+        //         None => return 0.0
+        //     }
+        // } else {
+        //     return -1000.0;
+        // }
+        let mut won = false;
+        if self.round_winner == self.my_id.denote() as i8{
+            won = true;
+        }
+        match self.prev_action {
+            Some(action) => match action {
+                Action::Attack(_) => if won {
+                    return 3000.0;
+                } else {
+                    return -500.0;
+                },
+                Action::Move(m) => match m.direction {
+                    Direction::Forward => if won {
+                        return 1500.0;
+                    } else {
+                        return 200.0;
+                    },
+                    Direction::Back => if won {
+                        return 1500.0;
+                    } else {
+                        return -200.0
                     }
                 }
-                None => return 0.0
             }
-        } else {
-            return -1000.0;
+            None => return 0.0
         }
+        
     }
     fn actions(&self) -> Vec<Action> {
         fn attack_cards(hands: &[CardID], card: CardID) -> Option<Action> {
@@ -422,7 +449,7 @@ impl Agent<MyState> for MyAgent {
                             break;
                         }
                         GameEnd(game_end) => {
-                            // print(format!(" 勝者:{}", game_end.winner()).as_str())?;
+                            print(format!(" 勝者:{}", game_end.winner()).as_str())?;
                             print(if game_end.winner() == self.state.my_id.denote() {
                                 "AIの勝ち!"
                             } else {
