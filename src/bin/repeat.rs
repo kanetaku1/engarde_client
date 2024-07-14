@@ -12,11 +12,12 @@ const FINAL_LOOP_COUNT: usize = 20;
 const LOOP_COUNT: usize = 20;
 const MAX_ROUND: u32 = 100;
 
-#[derive(ValueEnum, Clone, Debug)]
+#[derive(ValueEnum, Clone, Debug, Copy)]
 enum Client {
     Train,
     Eval,
     Random,
+    Random_forward,
     Algorithm,
     Aggressive,
 }
@@ -37,6 +38,9 @@ impl Client {
             Self::Random => Command::new(".\\random.exe")
                 .spawn()
                 .expect("random.exe起動失敗"),
+            Self::Random_forward => Command::new(".\\random_forward.exe")
+                .spawn()
+                .expect("random_forward.exe起動失敗"),
             Self::Algorithm => Command::new(".\\using_algorithm.exe")
                 .spawn()
                 .expect("using_algorithm.exe起動失敗"),
@@ -53,6 +57,7 @@ impl Display for Client {
             Self::Train => "train",
             Self::Eval => "eval",
             Self::Random => "random",
+            Self::Random_forward => "random_forward",
             Self::Algorithm => "algorithm",
             Self::Aggressive => "aggressive",
         };
@@ -104,5 +109,5 @@ fn client_loop(client0: Client, client1: Client, loop_count: usize, max_round: u
 
 fn main() {
     let args = Args::parse();
-    client_loop(args.player0, args.player1, args.loop_count, args.max_round)
+    client_loop(args.player0, args.player1, args.loop_count, args.max_round);
 }

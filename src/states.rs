@@ -12,7 +12,7 @@ use std::{
 use apply::Also;
 use num_rational::Ratio;
 use num_traits::{ToPrimitive, Zero};
-use rurel::mdp::{Agent, State};
+use rurel::{mdp::{Agent, State}, strategy::learn::q};
 
 use crate::{
     algorithm::{card_map_from_hands, safe_possibility, ProbabilityTable},
@@ -20,6 +20,14 @@ use crate::{
     protocol::{Evaluation, Messages, PlayAttack, PlayMovement, PlayerID},
     read_stream, send_info, Action, Attack, CardID, Direction, Maisuu, Movement, UsedCards,
 };
+
+#[derive(PartialEq, Eq, Hash, Clone, Debug)]
+pub enum GameResult {
+    Win,
+    Lose,
+    Even,
+}
+
 
 /// Stateは、結果状態だけからその評価と次できる行動のリストを与える。
 #[derive(PartialEq, Eq, Hash, Clone, Debug)]
@@ -33,7 +41,7 @@ pub struct MyState {
     p1_position: u8,
     game_end: bool,
     prev_action: Option<Action>,
-    round_winner: i8,
+    current_result: GameResult,
 }
 
 impl MyState {
@@ -90,7 +98,7 @@ impl MyState {
         p1_position: u8,
         game_end: bool,
         prev_action: Option<Action>,
-        round_winner: i8,
+        current_result: GameResult,
     ) -> Self {
         Self {
             my_id,
@@ -102,7 +110,7 @@ impl MyState {
             p1_position,
             game_end,
             prev_action,
-            round_winner,
+            current_result,
         }
     }
 
@@ -142,7 +150,7 @@ impl MyState {
             .unwrap_or(Ratio::<u64>::zero())
             .to_f64()
             .expect("なんで")
-            .mul(10.0)
+            .mul(100.0)
     }
 
     #[allow(clippy::float_arithmetic)]
@@ -161,6 +169,10 @@ impl MyState {
     fn calc_position_reward(&self) -> f64 {
         f64::from(self.distance_from_center()) * 200.0
     }
+
+    fn get_current_result(&self) -> &GameResult {
+        &self.current_result
+    }
 }
 
 impl State for MyState {
@@ -172,49 +184,35 @@ impl State for MyState {
         let b = self.calc_score_reward();
         let c = self.calc_position_reward();
 
-        // if self.round_winner == self.my_id.denote() as i8 {
-        //     return 1000.0;
-        // } else if self.round_winner == -1 {
-        //     match self.prev_action {
-        //         Some(action) => match action {
-        //             Action::Attack(_) => return 50.0,
-        //             Action::Move(m) => match m.direction {
-        //                 Direction::Forward => return 30.0,
-        //                 Direction::Back => return 10.0,
-        //             }
-        //         }
-        //         None => return 0.0
-        //     }
-        // } else {
-        //     return -1000.0;
+        let current_result = self.get_current_result();
+        // match current_result {
+        //     GameResult::Win => 100.0 + a,
+        //     GameResult::Even => a,
+        //     GameResult::Lose => -100.0 + a,
         // }
-        let mut won = false;
-        if self.round_winner == self.my_id.denote() as i8{
-            won = true;
-        }
+
         match self.prev_action {
             Some(action) => match action {
-                Action::Attack(_) => if won {
-                    return 3000.0;
-                } else {
-                    return -500.0;
-                },
+                Action::Attack(_) => match current_result {
+                    GameResult::Win => return 3000.0,
+                    GameResult::Even => return 500.0,
+                    GameResult::Lose => return -3000.0,
+                }
                 Action::Move(m) => match m.direction {
-                    Direction::Forward => if won {
-                        return 1500.0;
-                    } else {
-                        return 200.0;
-                    },
-                    Direction::Back => if won {
-                        return 1500.0;
-                    } else {
-                        return -200.0
+                    Direction::Forward => match current_result {
+                        GameResult::Win => return 1500.0,
+                        GameResult::Even => return 300.0,
+                        GameResult::Lose => return -1500.0,
+                    }
+                    Direction::Back => match current_result {
+                        GameResult::Win => return 2000.0,
+                        GameResult::Even => return 200.0,
+                        GameResult::Lose => return -2000.0,
                     }
                 }
             }
             None => return 0.0
         }
-        
     }
     fn actions(&self) -> Vec<Action> {
         fn attack_cards(hands: &[CardID], card: CardID) -> Option<Action> {
@@ -321,7 +319,7 @@ impl From<MyState> for [f32; 15] {
             .also(|hands| hands.resize(5, 0.0));
         let cards = value
             .used
-            .get_nakami()
+            .into_iter()
             .iter()
             .map(|&x| f32::from(x.denote()))
             .collect::<Vec<f32>>();
@@ -379,7 +377,7 @@ impl MyAgent {
                 p1_position: position_1,
                 game_end: false,
                 prev_action: None,
-                round_winner: -1,
+                current_result: GameResult::Even,
             },
         }
     }
@@ -413,10 +411,10 @@ impl Agent<MyState> for MyAgent {
                                 (board_info.p0_position(), board_info.p1_position());
                             (self.state.p0_score, self.state.p1_score) =
                                 (board_info.p0_score(), board_info.p1_score());
-                            self.state.round_winner = -1;
+                            self.state.current_result = GameResult::Even;
                         }
                         HandInfo(hand_info) => {
-                            let hand_vec = hand_info.to_vec();
+                            let hand_vec = hand_info.to_vec().also(|hand_vec| hand_vec.sort());
                             self.state.hands = hand_vec;
                             break;
                         }
@@ -424,6 +422,7 @@ impl Agent<MyState> for MyAgent {
                         DoPlay(_) => {
                             send_info(&mut self.writer, &Evaluation::new())?;
                             send_action(&mut self.writer, action)?;
+                            self.state.used.used_action(action);
                             self.state.prev_action = Some(action);
                         }
                         ServerError(e) => {
@@ -433,11 +432,10 @@ impl Agent<MyState> for MyAgent {
                         }
                         Played(played) => {
                             self.state.used.used_action(played.to_action());
-                            break;
                         }
                         RoundEnd(round_end) => {
                             // print(
-                            //     format!("ラウンド終わり! 勝者:{}", round_end.round_winner).as_str(),
+                            //     format!("ラウンド終わり! 勝者:{}", round_end.round_winner()).as_str(),
                             // )?;
                             match round_end.round_winner() {
                                 0 => self.state.p0_score += 1,
@@ -445,7 +443,13 @@ impl Agent<MyState> for MyAgent {
                                 _ => {}
                             }
                             self.state.used = UsedCards::new();
-                            self.state.round_winner = round_end.round_winner();
+                            self.state.current_result = if round_end.round_winner() == self.state.my_id.denote() as i8 {
+                                GameResult::Win
+                            } else if round_end.round_winner() == -1 {
+                                GameResult::Even
+                            } else {
+                                GameResult::Lose
+                            };
                             break;
                         }
                         GameEnd(game_end) => {
