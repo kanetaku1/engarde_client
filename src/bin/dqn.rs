@@ -50,75 +50,80 @@ const LEARNING_RATE: f32 = 0.001;
 /// ベストに近いアクションを返す
 #[allow(dead_code, clippy::too_many_lines)]
 fn neary_best_action(state: &MyState, trainer: &DQNAgentTrainerContinuous) -> Option<Action> {
-    let best = trainer.best_action(state)?;
+    // let best_action_index = trainer.best_action(state);
+    // // インデックスから行動を復元
+    // let action = Action::from_index(best_action_index);
     let actions = state.actions();
-    if actions.contains(&best) {
-        Some(best)
-    } else {
-        match best {
-            Action::Attack(_) => {
-                let mut actions = actions;
-                actions.sort_by_key(|action| match action {
-                    Action::Move(_) => 1,
-                    Action::Attack(_) => 0,
-                });
-                actions.first().copied()
-            }
-            Action::Move(movement) => {
-                // 前進の場合、前進-攻撃-後退の順に並び替え
-                // 後退の場合、後退-攻撃-前進の順に並び替え
-                fn ordering(
-                    key_direction: Direction,
-                    key_card: CardID,
-                    action1: Action,
-                    action2: Action,
-                ) -> Ordering {
-                    match action1 {
-                        Action::Move(movement1) => {
-                            let card1 = movement1.card();
-                            let direction1 = movement1.direction();
-                            match action2 {
-                                Action::Move(movement2) => {
-                                    let card2 = movement2.card();
-                                    let direction2 = movement2.direction();
-                                    let key_card_i32 = i32::from(key_card.denote());
-                                    let card1_i32 = i32::from(card1.denote());
-                                    let card2_i32 = i32::from(card2.denote());
-                                    match (direction1, direction2) {
-                                        (Direction::Forward, Direction::Forward) | 
-                                        (Direction::Back, Direction::Back) => {
-                                            (card1_i32 - key_card_i32).abs().cmp(&(card2_i32 - key_card_i32).abs())
-                                        }
-                                        (Direction::Forward, Direction::Back) => Ordering::Less,
-                                        (Direction::Back, Direction::Forward) => Ordering::Greater,
-                                    }
-                                }
-                                Action::Attack(_) => match key_direction {
-                                    Direction::Forward => Ordering::Less,
-                                    Direction::Back => Ordering::Greater,
-                                },
-                            }
-                        }
-                        Action::Attack(_) => match action2 {
-                            Action::Move(_) => match key_direction {
-                                Direction::Forward => Ordering::Greater,
-                                Direction::Back => Ordering::Less,
-                            },
-                            Action::Attack(_) => Ordering::Equal,
-                        },
-                    }
-                }
+    let best = trainer.best_action(state, &actions)?;
+    Some(best)
+    // if actions.contains(&best) {
+    //     Some(best)
+    // } else {
+    //     // dbg!("Nothing bestAction");
+    //     match best {
+    //         Action::Attack(_) => {
+    //             let mut actions = actions.clone();
+    //             actions.sort_by_key(|action| match action {
+    //                 Action::Move(_) => 1,
+    //                 Action::Attack(_) => 0,
+    //             });
+    //             actions.first().copied()
+    //         }
+    //         Action::Move(movement) => {
+    //             // 前進の場合、前進-攻撃-後退の順に並び替え
+    //             // 後退の場合、後退-攻撃-前進の順に並び替え
+    //             fn ordering(
+    //                 key_direction: Direction,
+    //                 key_card: CardID,
+    //                 action1: Action,
+    //                 action2: Action,
+    //             ) -> Ordering {
+    //                 match action1 {
+    //                     Action::Move(movement1) => {
+    //                         let card1 = movement1.card();
+    //                         let direction1 = movement1.direction();
+    //                         match action2 {
+    //                             Action::Move(movement2) => {
+    //                                 let card2 = movement2.card();
+    //                                 let direction2 = movement2.direction();
+    //                                 let key_card_i32 = i32::from(key_card.denote());
+    //                                 let card1_i32 = i32::from(card1.denote());
+    //                                 let card2_i32 = i32::from(card2.denote());
+    //                                 match (direction1, direction2) {
+    //                                     (Direction::Forward, Direction::Forward) | 
+    //                                     (Direction::Back, Direction::Back) => {
+    //                                         (card1_i32 - key_card_i32).abs().cmp(&(card2_i32 - key_card_i32).abs())
+    //                                     }
+    //                                     (Direction::Forward, Direction::Back) => Ordering::Less,
+    //                                     (Direction::Back, Direction::Forward) => Ordering::Greater,
+    //                                 }
+    //                             }
+    //                             Action::Attack(_) => match key_direction {
+    //                                 Direction::Forward => Ordering::Less,
+    //                                 Direction::Back => Ordering::Greater,
+    //                             },
+    //                         }
+    //                     }
+    //                     Action::Attack(_) => match action2 {
+    //                         Action::Move(_) => match key_direction {
+    //                             Direction::Forward => Ordering::Greater,
+    //                             Direction::Back => Ordering::Less,
+    //                         },
+    //                         Action::Attack(_) => Ordering::Equal,
+    //                     },
+    //                 }
+    //             }
 
-                let card = movement.card();
-                let direction = movement.direction();
-                let mut actions = actions;
-                actions.sort_by(|&action1, &action2| {
-                    ordering(direction, card, action1, action2)
-                });
-                actions.first().copied()
-            }
-        }
-    }
+    //             let card = movement.card();
+    //             let direction = movement.direction();
+    //             let mut actions = actions.clone();
+    //             actions.sort_by(|&action1, &action2| {
+    //                 ordering(direction, card, action1, action2)
+    //             });
+    //             actions.first().copied()
+    //         }
+    //     }
+    // }
 }
 
 
@@ -161,7 +166,10 @@ impl ExplorationStrategy<MyState> for EpsilonGreedyContinuous {
                     agent.take_action(&action);
                     action
                 },
-                None => agent.pick_random_action(),
+                None => {
+                    dbg!("random Action");
+                    agent.pick_random_action()
+                }
             }
         }
     }
@@ -182,7 +190,10 @@ impl ExplorationStrategy<MyState> for BestExplorationDqnContinuous {
                 agent.take_action(&action);
                 action
             }
-            None => agent.pick_random_action(),
+            None => {
+                dbg!("random Action");
+                agent.pick_random_action()
+            }
         }
     }
 }
@@ -240,6 +251,7 @@ fn dqn_train(ip: SocketAddrV4) -> io::Result<()> {
         }
     };
     let hand_vec = hand_info.to_vec().also(|hand_vec| hand_vec.sort());
+    // let hand_vec = hand_info.to_vec();
     // AI用エージェント作成
     let mut agent = MyAgent::new(
         id,
@@ -405,6 +417,7 @@ fn dqn_eval(ip: SocketAddrV4) -> io::Result<()> {
         }
     };
     let hand_vec = hand_info.to_vec().also(|hand_vec| hand_vec.sort());
+    // let hand_vec = hand_info.to_vec();
     // AI用エージェント作成
     let mut agent = MyAgent::new(
         id,
