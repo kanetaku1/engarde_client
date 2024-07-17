@@ -10,7 +10,8 @@ use crate::{
     strategy::{explore::ExplorationStrategy, terminate::TerminationStrategy},
 };
 
-const BATCH: usize = 64;
+const BATCH: usize = 512;
+const TARGET_UPDATE_FREQ: usize = 50; // ターゲットネットワークの更新頻度
 
 type QNetwork<const STATE_SIZE: usize, const ACTION_SIZE: usize, const INNER_SIZE: usize> = (
     (Linear<STATE_SIZE, INNER_SIZE>, ReLU),
@@ -102,9 +103,11 @@ where
     /// value was learned.
     pub fn expected_value(&self, state: &S) -> [f32; ACTION_SIZE] {
         let state_: [f32; STATE_SIZE] = (state.clone()).into();
-        let states: Tensor<Rank1<STATE_SIZE>, f32, _> =
-            self.dev.tensor(state_).normalize::<Axis<0>>(0.001);
+        // println!("State: {:?}", state_);
+        let states: Tensor<Rank1<STATE_SIZE>, f32, _> = self.dev.tensor(state_).normalize::<Axis<0>>(0.001);
+        // println!("Normalized State: {:?}", states);
         let actions = self.target_q_net.forward(states).nans_to(0f32);
+        // println!("Actions: {:?}", actions);
         actions.array()
     }
 
@@ -125,10 +128,36 @@ where
     }
 
     /// Returns the best action for the given `State`, or `None` if no values were learned.
-    pub fn best_action(&self, state: &S) -> Option<S::A> {
-        let target = self.expected_value(state);
+    // pub fn best_action(&self, state: &S) -> Option<S::A> {
+        // let target = self.expected_value(state);
 
-        Some(target.into())
+        // // // 最大のQ値を持つ行動を選択
+        // // let best_action_index = target
+        // //     .iter()
+        // //     .enumerate()
+        // //     .max_by(|(_, q1), (_, q2)| q1.partial_cmp(q2).unwrap())
+        // //     .map(|(index, _)| index)
+        // //     .unwrap();
+
+        // // best_action_index
+        // Some(target.into())
+    pub fn best_action(&self, state: &S, valid_actions: &[S::A]) -> Option<S::A> {
+        let target = self.expected_value(state);
+        
+        // 有効なアクションのQ値のみを考慮
+        let best_action = valid_actions.iter()
+            .max_by(|&a1, &a2| {
+                let idx1 = self.action_to_index(a1);
+                let idx2 = self.action_to_index(a2);
+                target[idx1].partial_cmp(&target[idx2]).unwrap()
+            })
+            .cloned();
+        best_action
+    }
+
+    fn action_to_index(&self, action: &S::A) -> usize {
+        let action_array: [f32; ACTION_SIZE] = action.clone().into();
+        action_array.iter().position(|&x| x == 1.0).unwrap()
     }
 
     #[allow(clippy::boxed_local)]
@@ -143,9 +172,61 @@ where
         self.target_q_net.clone_from(&self.q_network);
         let mut grads = self.q_network.alloc_grads();
 
-        let dones: Tensor<Rank1<BATCH>, f32, _> =
-            self.dev.tensor(dones.map(|d| if d { 1f32 } else { 0f32 }));
-        let rewards = self.dev.tensor(rewards);
+        // let dones: Tensor<Rank1<BATCH>, f32, _> =
+        //     self.dev.tensor(dones.map(|d| if d { 1f32 } else { 0f32 }));
+        // let scaled_rewards = rewards.map(|r| r * 100.0);  // 報酬を大きくスケーリング
+        // let rewards = self.dev.tensor(scaled_rewards);
+        // // let rewards = self.dev.tensor(rewards);
+
+        // // Convert to tensors and normalize the states for better training
+        // let states: Tensor<Rank2<BATCH, STATE_SIZE>, f32, _> =
+        //     self.dev.tensor(*states).normalize::<Axis<1>>(0.001);
+
+        // // Convert actions to tensors and get the max action for each batch
+        // let actions: Tensor<Rank1<BATCH>, usize, _> = self.dev.tensor(actions.map(|a| {
+        //     let mut max_idx = 0;
+        //     let mut max_val = 0f32;
+        //     for (i, v) in a.iter().enumerate() {
+        //         if *v > max_val {
+        //             max_val = *v;
+        //             max_idx = i;
+        //         }
+        //     }
+        //     max_idx
+        // }));
+
+        // // Convert to tensors and normalize the states for better training
+        // let next_states: Tensor<Rank2<BATCH, STATE_SIZE>, f32, _> =
+        //     self.dev.tensor(*next_states).normalize::<Axis<1>>(0.001);
+
+        // // Compute the estimated Q-value for the action
+        // for _step in 0..20 {
+        //     let q_values = self.q_network.forward(states.trace(grads));
+
+        //     let action_qs = q_values.select(actions.clone());
+
+        //     // targ_q = R + discount * max(Q(S'))
+        //     // curr_q = Q(S)[A]
+        //     // loss = huber(curr_q, targ_q, 1)
+        //     let next_q_values = self.target_q_net.forward(next_states.clone());
+        //     let max_next_q = next_q_values.max::<Rank1<BATCH>, _>();
+        //     let target_q = (max_next_q * (-dones.clone() + 1.0)) * self.gamma + rewards.clone();
+
+        //     let loss = huber_loss(action_qs, target_q, 1.0);
+
+        //     grads = loss.backward();
+
+        //     // update weights with optimizer
+        //     self.sgd
+        //         .update(&mut self.q_network, &grads)
+        //         .expect("Unused params");
+        //     self.q_network.zero_grads(&mut grads);
+        // }
+        // self.target_q_net.clone_from(&self.q_network);
+        let dones: Tensor<Rank1<BATCH>, f32, _> = self.dev.tensor(dones.map(|d| if d { 1f32 } else { 0f32 }));
+        let scaled_rewards = rewards.map(|r| r * 100.0);  // 報酬を大きくスケーリング
+        let rewards = self.dev.tensor(scaled_rewards);
+        // let rewards = self.dev.tensor(rewards);
 
         // Convert to tensors and normalize the states for better training
         let states: Tensor<Rank2<BATCH, STATE_SIZE>, f32, _> =

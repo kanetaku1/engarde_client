@@ -33,10 +33,89 @@ use engarde_client::{
 
 struct EpsilonGreedy(DQNAgentTrainer<MyState, 16, 35, 32>);
 
-impl EpsilonGreedy {
-    fn new(trainer: DQNAgentTrainer<MyState, 16, 35, 32>) -> Self {
-        EpsilonGreedy(trainer)
-    }
+const INNER_CONTINUOUS: usize = 128;
+const ACTION_SIZE_CONTINUOUS: usize = 3;
+
+const DISCOUNT_RATE: f32 = 0.99;
+const LEARNING_RATE: f32 = 0.001;
+
+/// ベストに近いアクションを返す
+#[allow(dead_code, clippy::too_many_lines)]
+fn neary_best_action(state: &MyState, trainer: &DQNAgentTrainerContinuous) -> Option<Action> {
+    // let best_action_index = trainer.best_action(state);
+    // // インデックスから行動を復元
+    // let action = Action::from_index(best_action_index);
+    let actions = state.actions();
+    let best = trainer.best_action(state, &actions)?;
+    Some(best)
+    // if actions.contains(&best) {
+    //     Some(best)
+    // } else {
+    //     // dbg!("Nothing bestAction");
+    //     match best {
+    //         Action::Attack(_) => {
+    //             let mut actions = actions.clone();
+    //             actions.sort_by_key(|action| match action {
+    //                 Action::Move(_) => 1,
+    //                 Action::Attack(_) => 0,
+    //             });
+    //             actions.first().copied()
+    //         }
+    //         Action::Move(movement) => {
+    //             // 前進の場合、前進-攻撃-後退の順に並び替え
+    //             // 後退の場合、後退-攻撃-前進の順に並び替え
+    //             fn ordering(
+    //                 key_direction: Direction,
+    //                 key_card: CardID,
+    //                 action1: Action,
+    //                 action2: Action,
+    //             ) -> Ordering {
+    //                 match action1 {
+    //                     Action::Move(movement1) => {
+    //                         let card1 = movement1.card();
+    //                         let direction1 = movement1.direction();
+    //                         match action2 {
+    //                             Action::Move(movement2) => {
+    //                                 let card2 = movement2.card();
+    //                                 let direction2 = movement2.direction();
+    //                                 let key_card_i32 = i32::from(key_card.denote());
+    //                                 let card1_i32 = i32::from(card1.denote());
+    //                                 let card2_i32 = i32::from(card2.denote());
+    //                                 match (direction1, direction2) {
+    //                                     (Direction::Forward, Direction::Forward) | 
+    //                                     (Direction::Back, Direction::Back) => {
+    //                                         (card1_i32 - key_card_i32).abs().cmp(&(card2_i32 - key_card_i32).abs())
+    //                                     }
+    //                                     (Direction::Forward, Direction::Back) => Ordering::Less,
+    //                                     (Direction::Back, Direction::Forward) => Ordering::Greater,
+    //                                 }
+    //                             }
+    //                             Action::Attack(_) => match key_direction {
+    //                                 Direction::Forward => Ordering::Less,
+    //                                 Direction::Back => Ordering::Greater,
+    //                             },
+    //                         }
+    //                     }
+    //                     Action::Attack(_) => match action2 {
+    //                         Action::Move(_) => match key_direction {
+    //                             Direction::Forward => Ordering::Greater,
+    //                             Direction::Back => Ordering::Less,
+    //                         },
+    //                         Action::Attack(_) => Ordering::Equal,
+    //                     },
+    //                 }
+    //             }
+
+    //             let card = movement.card();
+    //             let direction = movement.direction();
+    //             let mut actions = actions.clone();
+    //             actions.sort_by(|&action1, &action2| {
+    //                 ordering(direction, card, action1, action2)
+    //             });
+    //             actions.first().copied()
+    //         }
+    //     }
+    // }
 }
 
 impl ExplorationStrategy<MyState> for EpsilonGreedy {
@@ -47,37 +126,16 @@ impl ExplorationStrategy<MyState> for EpsilonGreedy {
         if random < (u64::MAX / 2) {
             agent.pick_random_action()
         } else {
-            let current_state = agent.current_state();
-
-            // 行動していいアクション"のインデックス"のリストを取得
-            let available_action_indicies = current_state
-                .actions()
-                .into_iter()
-                .map(|action| action.as_index())
-                .collect::<Vec<usize>>();
-            // 評価値のリストを取得
-            let expected_values = self.0.expected_value(current_state);
-
-            // 有効なアクションと評価値のリストを取得
-            let available_actions = expected_values
-                .into_iter()
-                .enumerate()
-                .filter(|(i, _)| available_action_indicies.contains(i))
-                .collect::<Vec<(usize, f32)>>();
-
-            // 評価値が最大のインデックスを取得
-            let action_index = available_actions
-                .into_iter()
-                .max_by(|(_, value), (_, other_value)| value.total_cmp(other_value))
-                .expect("必ず最大値がある")
-                .0;
-
-            // そのインデックスでアクションに変換
-            let action = Action::from_index(action_index);
-
-            // 行動
-            agent.take_action(&action);
-            action
+            match neary_best_action(agent.current_state(), &self.past_exp) {
+                Some(action) => {
+                    agent.take_action(&action);
+                    action
+                },
+                None => {
+                    dbg!("random Action");
+                    agent.pick_random_action()
+                }
+            }
         }
     }
 }
@@ -90,40 +148,18 @@ impl BestExplorationDqn {
     }
 }
 
-impl ExplorationStrategy<MyState> for BestExplorationDqn {
-    fn pick_action(&self, agent: &mut dyn Agent<MyState>) -> <MyState as State>::A {
-        let current_state = agent.current_state();
-
-        // 行動していいアクション"のインデックス"のリストを取得
-        let available_action_indicies = current_state
-            .actions()
-            .into_iter()
-            .map(|action| action.as_index())
-            .collect::<Vec<usize>>();
-
-        // 評価値のリストを取得
-        let expected_values = self.0.expected_value(current_state);
-
-        // 有効なアクションと評価値のリストを取得
-        let available_actions = expected_values
-            .into_iter()
-            .enumerate()
-            .filter(|(i, _)| available_action_indicies.contains(i))
-            .collect::<Vec<(usize, f32)>>();
-
-        // 評価値が最大のインデックスを取得
-        let action_index = available_actions
-            .into_iter()
-            .max_by(|(_, value), (_, other_value)| value.total_cmp(other_value))
-            .expect("必ず最大値がある")
-            .0;
-
-        // そのインデックスでアクションに変換
-        let action = Action::from_index(action_index);
-
-        // 行動
-        agent.take_action(&action);
-        action
+impl ExplorationStrategy<MyState> for BestExplorationDqnContinuous {
+    fn pick_action(&mut self, agent: &mut dyn Agent<MyState>) -> <MyState as State>::A {
+        match neary_best_action(agent.current_state(), &self.0) {
+            Some(action) => {
+                agent.take_action(&action);
+                action
+            }
+            None => {
+                dbg!("random Action");
+                agent.pick_random_action()
+            }
+        }
     }
 }
 
@@ -167,6 +203,7 @@ fn dqn_train() -> io::Result<()> {
         }
     };
     let hand_vec = hand_info.to_vec().also(|hand_vec| hand_vec.sort());
+    // let hand_vec = hand_info.to_vec();
     // AI用エージェント作成
     let mut agent = MyAgent::new(
         id,
@@ -272,6 +309,7 @@ fn dqn_eval() -> io::Result<()> {
         }
     };
     let hand_vec = hand_info.to_vec().also(|hand_vec| hand_vec.sort());
+    // let hand_vec = hand_info.to_vec();
     // AI用エージェント作成
     let mut agent = MyAgent::new(
         id,

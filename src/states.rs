@@ -12,7 +12,7 @@ use std::{
 use apply::Also;
 use num_rational::Ratio;
 use num_traits::{ToPrimitive, Zero};
-use rurel::mdp::{Agent, State};
+use rurel::{mdp::{Agent, State}, strategy::learn::q};
 
 use crate::{
     algorithm::{safe_possibility, ProbabilityTable},
@@ -21,6 +21,14 @@ use crate::{
     read_stream, send_info, Action, Attack, CardID, Direction, Maisuu, Movement, RestCards,
     HANDS_DEFAULT_U8,
 };
+
+#[derive(PartialEq, Eq, Hash, Clone, Debug)]
+pub enum GameResult {
+    Win,
+    Lose,
+    Even,
+}
+
 
 /// Stateは、結果状態だけからその評価と次できる行動のリストを与える。
 #[derive(PartialEq, Eq, Hash, Clone, Debug)]
@@ -33,6 +41,8 @@ pub struct MyState {
     p0_position: u8,
     p1_position: u8,
     game_end: bool,
+    prev_action: Option<Action>,
+    current_result: GameResult,
 }
 
 impl MyState {
@@ -88,6 +98,8 @@ impl MyState {
         p0_position: u8,
         p1_position: u8,
         game_end: bool,
+        prev_action: Option<Action>,
+        current_result: GameResult,
     ) -> Self {
         Self {
             my_id,
@@ -98,6 +110,8 @@ impl MyState {
             p0_position,
             p1_position,
             game_end,
+            prev_action,
+            current_result,
         }
     }
 
@@ -118,11 +132,36 @@ impl MyState {
     fn calc_dist(&self) -> u8 {
         self.p1_position - self.p0_position
     }
+//ネスに聞く
+    fn calc_safe_reward(&self) -> f64 {
+        let actions = self.actions();
+        let card_map = card_map_from_hands(&self.hands).expect("安心して");
+        actions
+            .iter()
+            .map(|&action| {
+                safe_possibility(
+                    self.calc_dist(),
+                    self.used_cards().to_restcards(card_map),
+                    self.hands(),
+                    &ProbabilityTable::new(&self.used_cards().to_restcards(card_map)),
+                    action,
+                )
+            })
+            .sum::<Option<Ratio<u64>>>()
+            .unwrap_or(Ratio::<u64>::zero())
+            .to_f64()
+            .expect("なんで")
+            .mul(100.0)
+    }
 
     fn calc_num_of_deck(&self) -> u8 {
         self.rest_cards().iter().map(Maisuu::denote).sum::<u8>()
             - u8::try_from(self.hands.len()).expect("いけるって")
             - HANDS_DEFAULT_U8
+    }
+
+    fn get_current_result(&self) -> &GameResult {
+        &self.current_result
     }
 }
 
@@ -130,36 +169,36 @@ impl State for MyState {
     type A = Action;
     #[allow(clippy::float_arithmetic)]
     fn reward(&self) -> f64 {
-        // let actions = self.actions();
-        // let a = actions
-        //     .iter()
-        //     .map(|&action| {
-        //         safe_possibility(
-        //             self.calc_dist(),
-        //             self.rest_cards(),
-        //             self.hands(),
-        //             &ProbabilityTable::new(self.calc_num_of_deck(), &self.rest_cards()),
-        //             action,
-        //         )
-        //     })
-        //     .sum::<Option<Ratio<u64>>>()
-        //     .unwrap_or(Ratio::<u64>::zero())
-        //     .to_f64()
-        //     .expect("なんで")
-        //     .mul(200.0)
-        //     .powi(2);
-        // let b = (f64::from(self.my_score())).powi(2) - (f64::from(self.enemy_score())).powi(2);
-        // a + b
-        0.0
-    }
-    fn final_score_reward(&self) -> f64 {
-        if self.game_end() {
-            if self.my_score() > self.enemy_score() {
-                100.0 // 勝利
-            } else if self.my_score() < self.enemy_score() {
-                -100.0 // 敗北
-            } else {
-                0.0 // 引き分け
+        let a = self.calc_safe_reward();
+        let b = self.calc_score_reward();
+        let c = self.calc_position_reward();
+
+        let current_result = self.get_current_result();
+        // match current_result {
+        //     GameResult::Win => 100.0 + a,
+        //     GameResult::Even => a,
+        //     GameResult::Lose => -100.0 + a,
+        // }
+
+        match self.prev_action {
+            Some(action) => match action {
+                Action::Attack(_) => match current_result {
+                    GameResult::Win => return 3000.0,
+                    GameResult::Even => return 500.0,
+                    GameResult::Lose => return -3000.0,
+                }
+                Action::Move(m) => match m.direction {
+                    Direction::Forward => match current_result {
+                        GameResult::Win => return 1500.0,
+                        GameResult::Even => return 300.0,
+                        GameResult::Lose => return -1500.0,
+                    }
+                    Direction::Back => match current_result {
+                        GameResult::Win => return 2000.0,
+                        GameResult::Even => return 200.0,
+                        GameResult::Lose => return -2000.0,
+                    }
+                }
             }
         } else {
             0.0
@@ -269,7 +308,8 @@ impl From<MyState> for [f32; 16] {
             .collect::<Vec<f32>>()
             .also(|hands| hands.resize(5, 0.0));
         let cards = value
-            .cards
+            .used
+            .into_iter()
             .iter()
             .map(|&x| f32::from(x.denote()))
             .collect::<Vec<f32>>();
@@ -328,6 +368,8 @@ impl MyAgent {
                 p0_position: position_0,
                 p1_position: position_1,
                 game_end: false,
+                prev_action: None,
+                current_result: GameResult::Even,
             },
         }
     }
@@ -357,9 +399,10 @@ impl Agent<MyState> for MyAgent {
                                 (board_info.p0_position(), board_info.p1_position());
                             (self.state.p0_score, self.state.p1_score) =
                                 (board_info.p0_score(), board_info.p1_score());
+                            self.state.current_result = GameResult::Even;
                         }
                         HandInfo(hand_info) => {
-                            let hand_vec = hand_info.to_vec();
+                            let hand_vec = hand_info.to_vec().also(|hand_vec| hand_vec.sort());
                             self.state.hands = hand_vec;
                             break;
                         }
@@ -367,6 +410,8 @@ impl Agent<MyState> for MyAgent {
                         DoPlay(_) => {
                             send_info(&mut self.writer, &Evaluation::new())?;
                             send_action(&mut self.writer, action)?;
+                            self.state.used.used_action(action);
+                            self.state.prev_action = Some(action);
                         }
                         ServerError(e) => {
                             print("エラーもらった")?;
@@ -374,19 +419,25 @@ impl Agent<MyState> for MyAgent {
                             break;
                         }
                         Played(played) => {
-                            self.state.cards.used_card(played.to_action());
-                            break;
+                            self.state.used.used_action(played.to_action());
                         }
                         RoundEnd(round_end) => {
                             // print(
-                            //     format!("ラウンド終わり! 勝者:{}", round_end.round_winner).as_str(),
+                            //     format!("ラウンド終わり! 勝者:{}", round_end.round_winner()).as_str(),
                             // )?;
                             match round_end.round_winner() {
                                 0 => self.state.p0_score += 1,
                                 1 => self.state.p1_score += 1,
                                 _ => {}
                             }
-                            self.state.cards = RestCards::new();
+                            self.state.used = UsedCards::new();
+                            self.state.current_result = if round_end.round_winner() == self.state.my_id.denote() as i8 {
+                                GameResult::Win
+                            } else if round_end.round_winner() == -1 {
+                                GameResult::Even
+                            } else {
+                                GameResult::Lose
+                            };
                             break;
                         }
                         GameEnd(game_end) => {

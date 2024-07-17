@@ -10,7 +10,60 @@ use engarde_client::print;
 
 const FINAL_LOOP_COUNT: usize = 20;
 const LOOP_COUNT: usize = 20;
-const MAX_SCORE: u32 = 100;
+const MAX_ROUND: u32 = 100;
+
+#[derive(ValueEnum, Clone, Debug, Copy)]
+enum Client {
+    Train,
+    Eval,
+    Random,
+    Random_forward,
+    Algorithm,
+    Aggressive,
+}
+
+impl Client {
+    fn execute(&self) -> Child {
+        match self {
+            Self::Train => Command::new(".\\dqn.exe")
+                .arg("-m")
+                .arg("train")
+                .spawn()
+                .expect("dqn.exe起動失敗"),
+            Self::Eval => Command::new(".\\dqn.exe")
+                .arg("-m")
+                .arg("eval")
+                .spawn()
+                .expect("dqn.exe起動失敗"),
+            Self::Random => Command::new(".\\random.exe")
+                .spawn()
+                .expect("random.exe起動失敗"),
+            Self::Random_forward => Command::new(".\\random_forward.exe")
+                .spawn()
+                .expect("random_forward.exe起動失敗"),
+            Self::Algorithm => Command::new(".\\using_algorithm.exe")
+                .spawn()
+                .expect("using_algorithm.exe起動失敗"),
+            Self::Aggressive => Command::new(".\\aggressive.exe")
+                .spawn()
+                .expect("aggressive.exe起動失敗"),
+        }
+    }
+}
+
+impl Display for Client {
+    fn fmt(&self, f: &mut Formatter<'_>) -> Result {
+        let s = match self {
+            Self::Train => "train",
+            Self::Eval => "eval",
+            Self::Random => "random",
+            Self::Random_forward => "random_forward",
+            Self::Algorithm => "algorithm",
+            Self::Aggressive => "aggressive",
+        };
+        s.fmt(f)
+    }
+}
 
 #[derive(ValueEnum, Clone, Debug)]
 enum LearningMode {
@@ -98,10 +151,5 @@ fn dqn_loop(final_loop: usize, loop_count: usize, max_score: u32) {
 
 fn main() {
     let args = Args::parse();
-    match args.learning_mode {
-        LearningMode::QLearning => {
-            q_learning_loop(args.final_loop, args.loop_count, args.max_score);
-        }
-        LearningMode::Dqn => dqn_loop(args.final_loop, args.loop_count, args.max_score),
-    }
+    client_loop(args.player0, args.player1, args.loop_count, args.max_round);
 }
