@@ -128,7 +128,7 @@ impl MyState {
         }
     }
 
-    fn calc_dist(&self) -> u8 {
+    pub fn distance_opposite(&self) -> u8 {
         self.p1_position - self.p0_position
     }
 //ネスに聞く
@@ -155,14 +155,18 @@ impl MyState {
 
     #[allow(clippy::float_arithmetic)]
     fn calc_score_reward(&self) -> f64 {
-        (f64::from(self.my_score())) - (f64::from(self.enemy_score()))
+        (f64::from(self.my_score()) * 10.0).powi(2) - (f64::from(self.enemy_score()) * 10.0).powi(2)
     }
 
     fn distance_from_center(&self) -> i8 {
         match self.my_id {
-            PlayerID::Zero => 12 - i8::try_from(self.p0_position).expect("i8の表現範囲外"),
-            PlayerID::One => i8::try_from(self.p1_position).expect("i8の表現範囲外") - 12,
+            PlayerID::Zero => i8::try_from(self.p0_position).expect("i8の表現範囲外") - 12,
+            PlayerID::One => 12 - i8::try_from(self.p1_position).expect("i8の表現範囲外"),
         }
+    }
+
+    fn distance_between_enemy(&self) -> u8 {
+        self.p1_position - self.p0_position
     }
 
     #[allow(clippy::float_arithmetic)]
@@ -170,8 +174,78 @@ impl MyState {
         f64::from(self.distance_from_center()) * 200.0
     }
 
-    fn get_current_result(&self) -> &GameResult {
-        &self.current_result
+    fn calc_winner_reward(&self) -> f64 {
+        match self.round_winner {
+            None | Some(None) => 0.0,
+            Some(Some(n)) => {
+                if n == self.my_id {
+                    10000.0
+                } else {
+                    -10000.0
+                }
+            }
+        }
+    }
+
+    fn action_reward(&self) -> f64 {
+        match self.prev_action {
+            None => 0.0,
+            Some(action) => match action {
+                Action::Move(m) => match m.direction() {
+                    Direction::Forward => match self.round_winner {
+                        None | Some(None) => 500.0,
+                        Some(Some(player)) if player == self.my_id() => 2000.0,
+                        Some(Some(_)) => -1500.0,
+                    },
+                    Direction::Back => match self.round_winner {
+                        None | Some(None) => 0.0,
+                        Some(Some(player)) if player == self.my_id() => 1000.0,
+                        Some(Some(_)) => -5000.0,
+                    },
+                },
+                Action::Attack(_) => match self.round_winner {
+                    None | Some(None) => 700.0,
+                    Some(Some(player)) if player == self.my_id() => 3000.0,
+                    Some(Some(_)) => -1000.0,
+                },
+            },
+        }
+    }
+
+    fn to_evaluation(&self) -> Evaluation {
+        let actions = self
+            .actions()
+            .into_iter()
+            .filter(|action| !matches!(action, Action::Attack(_)))
+            .collect::<Vec<Action>>();
+        let card_map = card_map_from_hands(self.hands()).expect("安心して");
+        let distance = self.distance_opposite();
+        let rest_cards = self.used_cards().to_restcards(card_map);
+        let hands = self.hands();
+        let table = &ProbabilityTable::new(&self.used_cards().to_restcards(card_map));
+        let safe_sum = actions
+            .iter()
+            .map(|&action| {
+                safe_possibility(distance, rest_cards, hands, table, action)
+                    .unwrap_or(Ratio::<u64>::zero())
+            })
+            .sum::<Ratio<u64>>();
+        let mut evaluation_set = Evaluation::new();
+        if safe_sum == Ratio::zero() {
+            return evaluation_set;
+        }
+        actions
+            .into_iter()
+            .map(|action| {
+                (
+                    action,
+                    safe_possibility(distance, rest_cards, hands, table, action)
+                        .unwrap_or(Ratio::zero())
+                        / safe_sum,
+                )
+            })
+            .for_each(|(action, eval)| evaluation_set.update(action, eval));
+        evaluation_set
     }
 }
 
@@ -182,37 +256,12 @@ impl State for MyState {
     fn reward(&self) -> f64 {
         let a = self.calc_safe_reward();
         let b = self.calc_score_reward();
+        // let b = 0.0;
         let c = self.calc_position_reward();
-
-        let current_result = self.get_current_result();
-        // match current_result {
-        //     GameResult::Win => 100.0 + a,
-        //     GameResult::Even => a,
-        //     GameResult::Lose => -100.0 + a,
-        // }
-
-        match self.prev_action {
-            Some(action) => match action {
-                Action::Attack(_) => match current_result {
-                    GameResult::Win => return 3000.0,
-                    GameResult::Even => return 500.0,
-                    GameResult::Lose => return -3000.0,
-                }
-                Action::Move(m) => match m.direction {
-                    Direction::Forward => match current_result {
-                        GameResult::Win => return 1500.0,
-                        GameResult::Even => return 300.0,
-                        GameResult::Lose => return -1500.0,
-                    }
-                    Direction::Back => match current_result {
-                        GameResult::Win => return 2000.0,
-                        GameResult::Even => return 200.0,
-                        GameResult::Lose => return -2000.0,
-                    }
-                }
-            }
-            None => return 0.0
-        }
+        let d = self.calc_winner_reward();
+        let e = self.action_reward();
+        // a + c + d
+        b
     }
     fn actions(&self) -> Vec<Action> {
         fn attack_cards(hands: &[CardID], card: CardID) -> Option<Action> {
@@ -308,41 +357,34 @@ impl State for MyState {
 //     enemy_position: u8,
 //     game_end: bool,
 // }
-impl From<MyState> for [f32; 15] {
+impl From<MyState> for [f32; 13] {
+    #[allow(clippy::float_arithmetic)]
     fn from(value: MyState) -> Self {
+        // プレイヤーIDをf32値に変更
         let id = vec![f32::from(value.my_id.denote())];
+        // 自分の手札(Vec)をf32値に変更、そのままVecとして表現
         let hands = value
             .hands
             .into_iter()
-            .map(|x| f32::from(x.denote()))
+            .map(|x| f32::from(x.denote() - 1) / 4.0)
             .collect::<Vec<f32>>()
             .also(|hands| hands.resize(5, 0.0));
+        // 使われたカード(インデックスとカード番号が対応、値と枚数が対応)をf32値に変更、そのままVecとして表現
         let cards = value
             .used
             .into_iter()
             .iter()
-            .map(|&x| f32::from(x.denote()))
+            .map(|&x| f32::from(x.denote()) / 5.0)
             .collect::<Vec<f32>>();
-        #[allow(clippy::as_conversions)]
-        #[allow(clippy::cast_precision_loss)]
-        let p0_score = vec![value.p0_score as f32];
-        #[allow(clippy::as_conversions)]
-        #[allow(clippy::cast_precision_loss)]
-        let p1_score = vec![value.p1_score as f32];
-        let my_position = vec![f32::from(value.p0_position)];
-        let enemy_position = vec![f32::from(value.p1_position)];
-        [
-            id,
-            hands,
-            cards,
-            p0_score,
-            p1_score,
-            my_position,
-            enemy_position,           
-        ]
-        .concat()
-        .try_into()
-        .expect("長さが15")
+        // プレイヤー0の位置をf32値に変更
+        let my_position = vec![f32::from(value.p0_position - 1) / 22.0];
+        // プレイヤー1の位置をf32値に変更
+        let enemy_position = vec![f32::from(value.p1_position - 1) / 22.0];
+        // 単一の配列としてまとめる
+        [id, hands, cards, my_position, enemy_position]
+            .concat()
+            .try_into()
+            .expect("長さが13")
     }
 }
 
@@ -420,7 +462,7 @@ impl Agent<MyState> for MyAgent {
                         }
                         Accept(_) => {}
                         DoPlay(_) => {
-                            send_info(&mut self.writer, &Evaluation::new())?;
+                            send_info(&mut self.writer, &self.state.to_evaluation())?;
                             send_action(&mut self.writer, action)?;
                             self.state.used.used_action(action);
                             self.state.prev_action = Some(action);
@@ -453,18 +495,25 @@ impl Agent<MyState> for MyAgent {
                             break;
                         }
                         GameEnd(game_end) => {
-                            print(format!(" 勝者:{}", game_end.winner()).as_str())?;
+                            self.state.round_winner = Some(PlayerID::from_u8(game_end.winner()));
+                            self.state.game_end = true;
+                            print(format!("ゲーム終わり! 勝者:{}", game_end.winner()).as_str())?;
                             print(if game_end.winner() == self.state.my_id.denote() {
                                 "AIの勝ち!"
                             } else {
                                 ""
                             })?;
-                            // print(format!("最終報酬:{}", self.state.reward()))?;
-                            // print(format!(
-                            //     "safe_possibilityの寄与:{}",
-                            //     self.state.calc_safe_reward()
-                            // ))?;
-                            self.state.game_end = true;
+                            print(format!("最終報酬:{}", self.state.reward()))?;
+                            print(format!("p0の位置:{}", self.state.p0_position))?;
+                            print(format!("p1の位置:{}", self.state.p1_position))?;
+                            print(format!(
+                                "position_reward:{}",
+                                self.state.calc_position_reward()
+                            ))?;
+                            print(format!(
+                                "safe_possibilityの寄与:{}",
+                                self.state.calc_safe_reward()
+                            ))?;
                             break;
                         }
                     },

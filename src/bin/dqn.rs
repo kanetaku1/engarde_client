@@ -9,14 +9,15 @@ use std::{
 
 use apply::Also;
 use clap::{Parser, ValueEnum};
+#[allow(clippy::wildcard_imports)]
+use dfdx::nn::modules::*;
 use dfdx::{
-    nn::modules::{Linear, ReLU},
     shapes::Const,
     tensor::{Cpu, NoneTape, Tensor, ZerosTensor},
 };
 use rand::{thread_rng, Rng};
 use rurel::{
-    dqn::DQNAgentTrainer,
+    dqn::{DQNAgentTrainer, Mish},
     mdp::{Agent, State},
     strategy::{
         explore::{ExplorationStrategy, RandomExploration},
@@ -32,8 +33,18 @@ use engarde_client::{
     Action, CardID, Direction,
 };
 
-type DQNAgentTrainerContinuous = DQNAgentTrainer<MyState, 15, 3, 128, 512>;
-type WeightInTensor = Tensor<(Const<INNER_CONTINUOUS>, Const<15>), f32, Cpu>;
+const STATE_SIZE: usize = 13;
+const INNER_DISCREATE: usize = 128;
+const ACTION_SIZE_DISCREATE: usize = 35;
+const INNER_CONTINUOUS: usize = 128;
+const ACTION_SIZE_CONTINUOUS: usize = 3;
+const INNER_KAZU: usize = 2;
+
+type DQNAgentTrainerDiscreate =
+    DQNAgentTrainer<MyState, STATE_SIZE, ACTION_SIZE_DISCREATE, INNER_DISCREATE>;
+type DQNAgentTrainerContinuous =
+    DQNAgentTrainer<MyState, STATE_SIZE, ACTION_SIZE_CONTINUOUS, INNER_CONTINUOUS>;
+type WeightInTensor = Tensor<(Const<INNER_CONTINUOUS>, Const<STATE_SIZE>), f32, Cpu>;
 type BiasInTensor = Tensor<(Const<INNER_CONTINUOUS>,), f32, Cpu>;
 type WeightInnerTensor =
     Tensor<(Const<INNER_CONTINUOUS>, Const<INNER_CONTINUOUS>), f32, Cpu, NoneTape>;
@@ -41,11 +52,8 @@ type BiasInnerTensor = Tensor<(Const<INNER_CONTINUOUS>,), f32, Cpu>;
 type WeightOutTensor = Tensor<(Const<ACTION_SIZE_CONTINUOUS>, Const<INNER_CONTINUOUS>), f32, Cpu>;
 type BiasOutTensor = Tensor<(Const<ACTION_SIZE_CONTINUOUS>,), f32, Cpu>;
 
-const INNER_CONTINUOUS: usize = 128;
-const ACTION_SIZE_CONTINUOUS: usize = 3;
-
-const DISCOUNT_RATE: f32 = 0.99;
-const LEARNING_RATE: f32 = 0.001;
+const DISCOUNT_RATE: f32 = 0.99999;
+const LEARNING_RATE: f32 = 0.00001;
 
 /// ベストに近いアクションを返す
 #[allow(dead_code, clippy::too_many_lines)]
@@ -126,6 +134,120 @@ fn neary_best_action(state: &MyState, trainer: &DQNAgentTrainerContinuous) -> Op
     // }
 }
 
+struct EpsilonGreedyDiscrete {
+    past_exp: DQNAgentTrainerDiscreate,
+    epsilon: u64,
+}
+
+impl EpsilonGreedyDiscrete {
+    fn new(trainer: DQNAgentTrainerDiscreate, start_epsilon: u64) -> Self {
+        EpsilonGreedyDiscrete {
+            past_exp: trainer,
+            epsilon: start_epsilon,
+        }
+    }
+}
+
+impl ExplorationStrategy<MyState> for EpsilonGreedyDiscrete {
+    fn pick_action(&mut self, agent: &mut dyn Agent<MyState>) -> <MyState as State>::A {
+        let mut rng = thread_rng();
+        let random = rng.gen::<u64>();
+        let expected_values = self.past_exp.expected_value(agent.current_state());
+        print_actions_priority(expected_values);
+        assert_ne!(expected_values[0], 320000f32, "NaN値になってます！");
+        if random < self.epsilon {
+            agent.pick_random_action()
+        } else {
+            let current_state = agent.current_state();
+
+            // 行動していいアクション"のインデックス"のリストを取得
+            let available_action_indicies = current_state
+                .actions()
+                .into_iter()
+                .map(|action| action.to_index())
+                .collect::<Vec<usize>>();
+            // 評価値のリストを取得
+            // let expected_values = self.past_exp.expected_value(current_state);
+            // 有効なアクションと評価値のリストを取得
+            let available_actions = expected_values
+                .into_iter()
+                .enumerate()
+                .filter(|(i, _)| available_action_indicies.contains(i))
+                .collect::<Vec<(usize, f32)>>();
+
+            // 評価値が最大のインデックスを取得
+            let action_index = available_actions
+                .into_iter()
+                .max_by(|(_, value), (_, other_value)| value.total_cmp(other_value))
+                .expect("必ず最大値がある")
+                .0;
+
+            // そのインデックスでアクションに変換
+            let action = Action::from_index(action_index);
+
+            // 行動
+            agent.take_action(&action);
+            action
+        }
+    }
+}
+
+struct BestExplorationDqnDiscrete(DQNAgentTrainerDiscreate);
+
+impl BestExplorationDqnDiscrete {
+    fn new(trainer: DQNAgentTrainerDiscreate) -> Self {
+        BestExplorationDqnDiscrete(trainer)
+    }
+}
+
+impl ExplorationStrategy<MyState> for BestExplorationDqnDiscrete {
+    fn pick_action(&mut self, agent: &mut dyn Agent<MyState>) -> <MyState as State>::A {
+        let current_state = agent.current_state();
+
+        // 行動していいアクション"のインデックス"のリストを取得
+        let available_action_indicies = current_state
+            .actions()
+            .into_iter()
+            .map(|action| action.to_index())
+            .collect::<Vec<usize>>();
+
+        // 評価値のリストを取得
+        let expected_values = self.0.expected_value(current_state);
+        print_actions_priority(expected_values);
+        // 有効なアクションと評価値のリストを取得
+        let available_actions = expected_values
+            .into_iter()
+            .enumerate()
+            .filter(|(i, _)| available_action_indicies.contains(i))
+            .collect::<Vec<(usize, f32)>>();
+
+        // 評価値が最大のインデックスを取得
+        let action_index = available_actions
+            .into_iter()
+            .max_by(|(_, value), (_, other_value)| value.total_cmp(other_value))
+            .expect("必ず最大値がある")
+            .0;
+
+        // そのインデックスでアクションに変換
+        let action = Action::from_index(action_index);
+
+        // 行動
+        agent.take_action(&action);
+        action
+    }
+}
+
+fn print_actions_priority(expected_values: [f32; 35]) {
+    let sorted_actions = expected_values
+        .into_iter()
+        .enumerate()
+        .collect::<Vec<_>>()
+        .also(|v| v.sort_unstable_by(|(_, x), (_, y)| y.total_cmp(x)))
+        .into_iter()
+        .map(|(i, _)| Action::from_index(i).to_string())
+        .collect::<Vec<_>>();
+    println!("{sorted_actions:?}");
+}
 
 struct EpsilonGreedyContinuous {
     past_exp: DQNAgentTrainerContinuous,
@@ -198,13 +320,21 @@ impl ExplorationStrategy<MyState> for BestExplorationDqnContinuous {
     }
 }
 
+struct RandomExploration2(DQNAgentTrainerDiscreate);
+
+impl ExplorationStrategy<MyState> for RandomExploration2 {
+    fn pick_action(&mut self, agent: &mut dyn Agent<MyState>) -> <MyState as State>::A {
+        let expected_values = self.0.expected_value(agent.current_state());
+        print_actions_priority(expected_values);
+        assert_ne!(expected_values[0], 320_000_f32, "NaN値になってます！");
+        agent.pick_random_action()
+    }
+}
+
 struct NNFileNames {
     weight_in: String,
     bias_in: String,
-    weight1: String,
-    bias1: String,
-    weight2: String,
-    bias2: String,
+    inner: Vec<(String, String)>,
     weight_out: String,
     bias_out: String,
 }
@@ -213,15 +343,20 @@ fn files_name(id: u8) -> NNFileNames {
     NNFileNames {
         weight_in: format!("learned_dqn/{id}/weight_in.npy"),
         bias_in: format!("learned_dqn/{id}/bias_in.npy"),
-        weight1: format!("learned_dqn/{id}/weight1.npy"),
-        bias1: format!("learned_dqn/{id}/bias1.npy"),
-        weight2: format!("learned_dqn/{id}/weight2.npy"),
-        bias2: format!("learned_dqn/{id}/bias2.npy"),
+        inner: (1..=INNER_KAZU)
+            .map(|x| {
+                (
+                    format!("learned_dqn/{id}/weight{x}.npy"),
+                    format!("learned_dqn/{id}/bias{x}.npy"),
+                )
+            })
+            .collect(),
         weight_out: format!("learned_dqn/{id}/weight_out.npy"),
         bias_out: format!("learned_dqn/{id}/bias_out.npy"),
     }
 }
 
+#[allow(clippy::too_many_lines)]
 fn dqn_train(ip: SocketAddrV4) -> io::Result<()> {
     // let addr = SocketAddr::from(([127, 0, 0, 1], 12052));
     let addr = ip;
@@ -268,20 +403,18 @@ fn dqn_train(ip: SocketAddrV4) -> io::Result<()> {
         let cpu = Cpu::default();
         let mut weight_in: WeightInTensor = cpu.zeros();
         let mut bias_in: BiasInTensor = cpu.zeros();
-        let mut weight1: WeightInnerTensor = cpu.zeros();
-        let mut bias1: BiasInnerTensor = cpu.zeros();
-        let mut weight2: WeightInnerTensor = cpu.zeros();
-        let mut bias2: BiasInnerTensor = cpu.zeros();
-        let mut weight_out: WeightOutTensor = cpu.zeros();
-        let mut bias_out: BiasOutTensor = cpu.zeros();
+        let mut inners: Vec<(WeightInnerTensor, BiasInnerTensor)> =
+            vec![(cpu.zeros(), cpu.zeros()); INNER_KAZU];
+        let mut weight_out: WeightOutTensorDiscreate = cpu.zeros();
+        let mut bias_out: BiasOutTensorDiscreate = cpu.zeros();
         let files = files_name(id.denote());
         (|| {
             weight_in.load_from_npy(files.weight_in).ok()?;
             bias_in.load_from_npy(files.bias_in).ok()?;
-            weight1.load_from_npy(files.weight1).ok()?;
-            bias1.load_from_npy(files.bias1).ok()?;
-            weight2.load_from_npy(files.weight2).ok()?;
-            bias2.load_from_npy(files.bias2).ok()?;
+            inners[0].0.load_from_npy(files.inner[0].0.clone()).ok()?;
+            inners[0].1.load_from_npy(files.inner[0].1.clone()).ok()?;
+            inners[1].0.load_from_npy(files.inner[1].0.clone()).ok()?;
+            inners[1].1.load_from_npy(files.inner[1].1.clone()).ok()?;
             weight_out.load_from_npy(files.weight_out).ok()?;
             bias_out.load_from_npy(files.bias_out).ok()?;
             Some(())
@@ -293,21 +426,21 @@ fn dqn_train(ip: SocketAddrV4) -> io::Result<()> {
                         weight: weight_in,
                         bias: bias_in,
                     },
-                    ReLU,
+                    Mish,
                 ),
                 (
                     Linear {
-                        weight: weight1,
-                        bias: bias1,
+                        weight: inners[0].0.clone(),
+                        bias: inners[0].1.clone(),
                     },
-                    ReLU,
+                    Mish,
                 ),
                 (
                     Linear {
-                        weight: weight2,
-                        bias: bias2,
+                        weight: inners[1].0.clone(),
+                        bias: inners[1].1.clone(),
                     },
-                    ReLU,
+                    Mish,
                 ),
                 Linear {
                     weight: weight_out,
@@ -320,19 +453,14 @@ fn dqn_train(ip: SocketAddrV4) -> io::Result<()> {
     let mut trainer2 = DQNAgentTrainer::new(DISCOUNT_RATE, LEARNING_RATE);
     trainer2.import_model(past_exp);
     // let epsilon = fs::read_to_string(format!("learned_dqn/{}/epsilon.txt", id.denote()))
-    //     .map(|eps_str| eps_str.parse::<f64>().expect("εが適切なu64値でない"))
-    //     .unwrap_or(1.0);
-    // let epsilon = (epsilon * DISCOUNT_RATE as f64).max(LEARNING_RATE as f64);
-    let start_epsilon = 1.0;
-    let min_epsilon = 0.1;
-    let epsilon_decay = 0.01;
-    let mut epsilon_greedy_exploration = EpsilonGreedyContinuous::new(trainer2, start_epsilon, min_epsilon, epsilon_decay);
-    let mut reward_history = Vec::new();
+    //     .map(|eps_str| eps_str.parse::<u64>().expect("εが適切なu64値でない"))
+    //     .unwrap_or(u64::MAX);
+    // let epsilon = (epsilon - (u64::MAX / 5000)).max(u64::MAX / 10);
+    // let mut epsilon_greedy_exploration = BestExplorationDqnDiscrete::new(trainer2, epsilon);
     trainer.train(
         &mut agent,
         &mut SinkStates {},
-        &mut epsilon_greedy_exploration,
-        &mut reward_history,
+        &mut BestExplorationDqnDiscrete(trainer2),
     );
     // ファイルへの追記
     // let mut file =  OpenOptions::new()
@@ -361,10 +489,10 @@ fn dqn_train(ip: SocketAddrV4) -> io::Result<()> {
         let _ = create_dir_all(format!("learned_dqn/{}", id.denote()));
         weight_in.save_to_npy(files.weight_in)?;
         bias_in.save_to_npy(files.bias_in)?;
-        weight1.save_to_npy(files.weight1)?;
-        bias1.save_to_npy(files.bias1)?;
-        weight2.save_to_npy(files.weight2)?;
-        bias2.save_to_npy(files.bias2)?;
+        weight1.save_to_npy(files.inner[0].0.clone())?;
+        bias1.save_to_npy(files.inner[0].1.clone())?;
+        weight2.save_to_npy(files.inner[1].0.clone())?;
+        bias2.save_to_npy(files.inner[1].1.clone())?;
         weight_out.save_to_npy(files.weight_out)?;
         bias_out.save_to_npy(files.bias_out)?;
         // fs::write(
@@ -375,7 +503,20 @@ fn dqn_train(ip: SocketAddrV4) -> io::Result<()> {
     Ok(())
 }
 
-fn evaluation(
+fn evaluation_continuous(
+    agent: &mut MyAgent,
+    termination_strategy: &mut dyn TerminationStrategy<MyState>,
+    best_exploration_strategy: &mut BestExplorationDqnContinuous,
+) {
+    loop {
+        best_exploration_strategy.pick_action(agent);
+        if termination_strategy.should_stop(agent.current_state()) {
+            break;
+        }
+    }
+}
+
+fn evaluation_discrete(
     agent: &mut MyAgent,
     termination_strategy: &mut dyn TerminationStrategy<MyState>,
     best_exploration_strategy: &mut BestExplorationDqnContinuous,
@@ -433,20 +574,18 @@ fn dqn_eval(ip: SocketAddrV4) -> io::Result<()> {
         let cpu = Cpu::default();
         let mut weight_in: WeightInTensor = cpu.zeros();
         let mut bias_in: BiasInTensor = cpu.zeros();
-        let mut weight1: WeightInnerTensor = cpu.zeros();
-        let mut bias1: BiasInnerTensor = cpu.zeros();
-        let mut weight2: WeightInnerTensor = cpu.zeros();
-        let mut bias2: BiasInnerTensor = cpu.zeros();
-        let mut weight_out: WeightOutTensor = cpu.zeros();
-        let mut bias_out: BiasOutTensor = cpu.zeros();
+        let mut inners: Vec<(WeightInnerTensor, BiasInnerTensor)> =
+            vec![(cpu.zeros(), cpu.zeros()); INNER_KAZU];
+        let mut weight_out: WeightOutTensorDiscreate = cpu.zeros();
+        let mut bias_out: BiasOutTensorDiscreate = cpu.zeros();
         let files = files_name(id.denote());
         (|| {
             weight_in.load_from_npy(files.weight_in).ok()?;
             bias_in.load_from_npy(files.bias_in).ok()?;
-            weight1.load_from_npy(files.weight1).ok()?;
-            bias1.load_from_npy(files.bias1).ok()?;
-            weight2.load_from_npy(files.weight2).ok()?;
-            bias2.load_from_npy(files.bias2).ok()?;
+            inners[0].0.load_from_npy(files.inner[0].0.clone()).ok()?;
+            inners[0].1.load_from_npy(files.inner[0].1.clone()).ok()?;
+            inners[1].0.load_from_npy(files.inner[1].0.clone()).ok()?;
+            inners[1].1.load_from_npy(files.inner[1].1.clone()).ok()?;
             weight_out.load_from_npy(files.weight_out).ok()?;
             bias_out.load_from_npy(files.bias_out).ok()?;
             Some(())
@@ -458,21 +597,21 @@ fn dqn_eval(ip: SocketAddrV4) -> io::Result<()> {
                         weight: weight_in,
                         bias: bias_in,
                     },
-                    ReLU,
+                    Mish,
                 ),
                 (
                     Linear {
-                        weight: weight1,
-                        bias: bias1,
+                        weight: inners[0].0.clone(),
+                        bias: inners[0].1.clone(),
                     },
-                    ReLU,
+                    Mish,
                 ),
                 (
                     Linear {
-                        weight: weight2,
-                        bias: bias2,
+                        weight: inners[1].0.clone(),
+                        bias: inners[1].1.clone(),
                     },
-                    ReLU,
+                    Mish,
                 ),
                 Linear {
                     weight: weight_out,
@@ -482,7 +621,7 @@ fn dqn_eval(ip: SocketAddrV4) -> io::Result<()> {
         })
     };
     trainer.import_model(past_exp.clone());
-    evaluation(
+    evaluation_discrete(
         &mut agent,
         &mut SinkStates {},
         &mut BestExplorationDqnContinuous::new(trainer),

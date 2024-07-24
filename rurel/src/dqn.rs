@@ -15,20 +15,39 @@ use crate::{
     strategy::{explore::ExplorationStrategy, terminate::TerminationStrategy},
 };
 
-const BATCH: usize = 512;
-const TARGET_UPDATE_FREQ: usize = 50; // ターゲットネットワークの更新頻度
+const BATCH: usize = 1024;
+
+#[derive(Default, Debug, Clone, Copy)]
+pub struct Mish;
+
+impl ZeroSizedModule for Mish {}
+impl NonMutableModule for Mish {}
+
+impl<S: Shape, E: Dtype, D: Device<E>, T: Tape<E, D>> Module<Tensor<S, E, D, T>> for Mish {
+    type Output = Tensor<S, E, D, T>;
+    type Error = D::Err;
+
+    fn try_forward(&self, input: Tensor<S, E, D, T>) -> Result<Self::Output, D::Err> {
+        let mut cloned = input.device().zeros_like(&input).retaped::<T>();
+        cloned.copy_from(&input.as_vec());
+        Ok(cloned
+            * (input.device().ones_like(&input).retaped::<T>() + input.try_exp()?)
+                .try_ln()?
+                .try_tanh()?)
+    }
+}
 
 type QNetwork<const STATE_SIZE: usize, const ACTION_SIZE: usize, const INNER_SIZE: usize> = (
-    (Linear<STATE_SIZE, INNER_SIZE>, ReLU),
-    (Linear<INNER_SIZE, INNER_SIZE>, ReLU),
-    (Linear<INNER_SIZE,INNER_SIZE>,ReLU),
+    (Linear<STATE_SIZE, INNER_SIZE>, Mish),
+    (Linear<INNER_SIZE, INNER_SIZE>, Mish),
+    (Linear<INNER_SIZE, INNER_SIZE>, Mish),
     Linear<INNER_SIZE, ACTION_SIZE>,
 );
 
 type QNetworkDevice<const STATE_SIZE: usize, const ACTION_SIZE: usize, const INNER_SIZE: usize> = (
-    (nn::modules::Linear<STATE_SIZE, INNER_SIZE, f32, Cpu>, ReLU),
-    (nn::modules::Linear<INNER_SIZE, INNER_SIZE, f32, Cpu>, ReLU),
-    (nn::modules::Linear<INNER_SIZE,INNER_SIZE,f32,Cpu>,ReLU),
+    (nn::modules::Linear<STATE_SIZE, INNER_SIZE, f32, Cpu>, Mish),
+    (nn::modules::Linear<INNER_SIZE, INNER_SIZE, f32, Cpu>, Mish),
+    (nn::modules::Linear<INNER_SIZE, INNER_SIZE, f32, Cpu>, Mish),
     nn::modules::Linear<INNER_SIZE, ACTION_SIZE, f32, Cpu>,
 );
 
@@ -406,14 +425,11 @@ where
                     break;
                 }
             }
-            reward_history.push(round_reward);
+            assert!(dones.into_iter().any(|x| x), "満タン!");
+            // train the network
+            self.train_dqn(states, actions, next_states, rewards, dones);
 
-            if self.replay_buffer.full {
-                let batch = self.replay_buffer.sample(BATCH);
-                let (states,actions, rewards, next_states, dones) = unzip_n(batch);
-                self.train_dqn(Box::new(states.try_into().unwrap()), actions.try_into().unwrap(), Box::new(next_states.try_into().unwrap()), rewards.try_into().unwrap(), dones.try_into().unwrap());
-            }
-            // self.train_dqn(states, actions, next_states, rewards, dones);
+            // terminate if the agent is done
             if termination_strategy.should_stop(s_t_next) {
                 break;
             }
