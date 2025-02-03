@@ -8,13 +8,16 @@ use std::{
 };
 
 use engarde_client::{
-    algorithm::{card_map_from_hands, ProbabilityTable},
+    algorithm::{card_map_from_hands, safe_possibility, ProbabilityTable},
     algorithm2::{initial_move, middle_move, AcceptableNumbers},
     get_id, print,
     protocol::{BoardInfo, Messages, PlayAttack, PlayMovement, PlayerID, PlayerName},
     read_stream, send_info, Action, Attack, CardID, Direction, Maisuu, Movement, RestCards,
 };
-use rand::{seq::SliceRandom, thread_rng};
+
+use clap::Parser;
+use num_rational::Ratio;
+use num_traits::Zero;
 
 struct MyStateAlg {
     id: PlayerID,
@@ -117,6 +120,46 @@ impl MyStateAlg {
             }
         }
     }
+
+    fn distance_opposite(&self) -> u8 {
+        self.p1_position - self.p0_position
+    }
+
+    fn to_evaluation(&self) -> Evaluation {
+        let actions = self
+            .actions()
+            .into_iter()
+            .filter(|action| !matches!(action, Action::Attack(_)))
+            .collect::<Vec<Action>>();
+        let card_map = card_map_from_hands(&self.hands).expect("安心して");
+        let distance = self.distance_opposite();
+        let rest_cards = self.used.to_restcards(card_map);
+        let hands = &self.hands;
+        let table = &ProbabilityTable::new(&self.used.to_restcards(card_map));
+        let safe_sum = actions
+            .iter()
+            .map(|&action| {
+                safe_possibility(distance, rest_cards, hands, table, action)
+                    .unwrap_or(Ratio::<u64>::zero())
+            })
+            .sum::<Ratio<u64>>();
+        let mut evaluation_set = Evaluation::new();
+        if safe_sum == Ratio::zero() {
+            return evaluation_set;
+        }
+        actions
+            .into_iter()
+            .map(|action| {
+                (
+                    action,
+                    safe_possibility(distance, rest_cards, hands, table, action)
+                        .unwrap_or(Ratio::zero())
+                        / safe_sum,
+                )
+            })
+            .for_each(|(action, eval)| evaluation_set.update(action, eval));
+        evaluation_set
+    }
 }
 
 fn act(state: &MyStateAlg) -> Option<Action> {
@@ -174,6 +217,7 @@ fn main() -> io::Result<()> {
                     Messages::Accept(_) => (),
                     Messages::DoPlay(_) => {
                         let action = act(&state).unwrap_or_else(|| panic!("行動決定不能"));
+                        send_info(&mut bufwriter, &state.to_evaluation())?;
                         send_action(&mut bufwriter, action)?;
                         state.cards.used_card(action);
                     }

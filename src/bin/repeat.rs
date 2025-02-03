@@ -2,7 +2,9 @@
 
 use std::{
     fmt::{Display, Formatter, Result},
-    process::Command,
+    process::{Child, Command},
+    thread,
+    time::Duration,
 };
 
 use clap::{Parser, ValueEnum};
@@ -17,7 +19,7 @@ enum Client {
     Train,
     Eval,
     Random,
-    Random_forward,
+    RandomForward,
     Algorithm,
     Aggressive,
 }
@@ -38,7 +40,7 @@ impl Client {
             Self::Random => Command::new(".\\random.exe")
                 .spawn()
                 .expect("random.exe起動失敗"),
-            Self::Random_forward => Command::new(".\\random_forward.exe")
+            Self::RandomForward => Command::new(".\\random_forward.exe")
                 .spawn()
                 .expect("random_forward.exe起動失敗"),
             Self::Algorithm => Command::new(".\\using_algorithm.exe")
@@ -57,7 +59,7 @@ impl Display for Client {
             Self::Train => "train",
             Self::Eval => "eval",
             Self::Random => "random",
-            Self::Random_forward => "random_forward",
+            Self::RandomForward => "random_forward",
             Self::Algorithm => "algorithm",
             Self::Aggressive => "aggressive",
         };
@@ -131,17 +133,9 @@ fn dqn_loop(final_loop: usize, loop_count: usize, max_score: u32) {
             .arg(max_score.to_string())
             .spawn()
             .expect("engarde_server.exe起動失敗");
-        let mut client0 = Command::new(".\\dqn.exe")
-            .arg("-m")
-            .arg("train")
-            .spawn()
-            .expect("dqn.exe起動失敗");
-        let mut client1 = Command::new(".\\dqn.exe")
-            .arg("-m")
-            .arg("train")
-            .spawn()
-            .expect("dqn.exe起動失敗");
-
+        let mut client0 = client0.execute();
+        thread::sleep(Duration::from_millis(50));
+        let mut client1 = client1.execute();
         server.wait().expect("engarde_serverクラッシュ");
         client0.wait().expect("dqn.exeクラッシュ");
         client1.wait().expect("dqn.exeクラッシュ");
